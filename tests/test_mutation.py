@@ -22,7 +22,7 @@ def off(**kw):
 def test_fixed_sigma_when_self_adaptation_off():
     w, p, c = world_with_twins(**off(mutation_rate=0.5))
     mutate(w.genome, c, w.cfg, w.gen)
-    assert torch.allclose(w.genome.sigma[c], torch.full((1, 3), w.cfg.mutation_scale))
+    assert torch.allclose(w.genome.sigma[c], torch.full((1, 4), w.cfg.mutation_scale))
 
 
 def test_self_adaptation_moves_sigma_within_bounds():
@@ -75,4 +75,4 @@ def test_food_patches_wander_and_stay_on_torus():
     for _ in range(200):
         w.step()
     assert not torch.allclose(start, w.patch_pos)
-    assert ((w.patch_pos >= 0) & (w.patch_pos < 1)).all()
+    assert ((w.patch_pos >= 0) & (w.patch_pos < w.cfg.world_size)).all()

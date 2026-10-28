@@ -12,7 +12,8 @@ def small(**kw) -> Config:
 def test_brains_have_expected_shapes():
     w = World(small())
     idx = w.alive.nonzero().squeeze(1)
-    out = think(w.genome.take(idx), torch.zeros(len(idx), N_INPUTS))
+    hidden, out = think(w.genome.take(idx), torch.zeros(len(idx), N_INPUTS), w.plastic[idx])
+    assert hidden.shape == (len(idx), w.cfg.hidden)
     assert out.shape == (len(idx), N_OUTPUTS)
     assert out.abs().max() <= 1
 
@@ -46,14 +47,14 @@ def test_same_seed_same_history():
 def test_birth_splits_energy_and_mutates_only_the_child():
     w = World(small(initial_particles=1, min_population=0))
     parent = int(w.alive.nonzero()[0])
-    w.energy[parent] = 3.0
+    w.energy[parent] = 4.0
     before = w.genome.take(torch.tensor([parent]))
     w._births()
 
     assert w.population == 2
     alive = w.alive.nonzero().squeeze(1)
     child = int(alive[alive != parent][0])
-    expected = 3.0 * (1 - w.cfg.birth_cost) / 2
+    expected = 4.0 * (1 - w.cfg.birth_cost) / 2
     assert torch.isclose(w.energy[parent], torch.tensor(expected))
     assert torch.isclose(w.energy[child], torch.tensor(expected))
     assert w.generation[child] == 1
@@ -62,7 +63,8 @@ def test_birth_splits_energy_and_mutates_only_the_child():
 
 
 def test_eating_moves_food_energy_into_particle():
-    w = World(small(initial_particles=1, min_population=0, base_metabolism=0, move_cost=0, aggression_cost=0))
+    w = World(small(initial_particles=1, min_population=0, base_metabolism=0, move_cost=0, aggression_cost=0,
+                    speed_upkeep=0, sense_upkeep=0, signal_cost=0, deposit_cost=0, plasticity=0))
     i = int(w.alive.nonzero()[0])
     w.food_alive[:] = False
     w.food[0] = w.pos[i]

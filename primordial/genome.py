@@ -1,4 +1,4 @@
-"""Heritable traits: a tiny recurrent neural network brain plus physical traits.
+"""Heritable traits: a recurrent, plastic neural-network brain plus body traits.
 
 Every field is a tensor with a leading `capacity` dimension, so slot `i`
 holds the genome of particle `i`. All brains run in one batched einsum.
@@ -10,15 +10,33 @@ import torch
 
 from .config import Config
 
-N_MEMORY = 2                  # recurrent channels: outputs fed back as next step's inputs
-N_SENSES = 11                 # see World._sense for the layout
+N_SENSES = 23   # see World._sense for the layout
+N_MEMORY = 2    # recurrent channels: outputs fed back as next step's inputs
 N_INPUTS = N_SENSES + N_MEMORY
-N_ACTIONS = 3                 # thrust x, thrust y, aggression
+
+# Output layout
+THRUST = slice(0, 2)
+AGGRESSION = 2
+SIGNAL = 3
+DEPOSIT = slice(4, 6)
+BOND = 6
+N_ACTIONS = 7
+MEMORY = slice(N_ACTIONS, N_ACTIONS + N_MEMORY)
 N_OUTPUTS = N_ACTIONS + N_MEMORY
 
+SENSE_NAMES = [
+    "food dx", "food dy", "food near", "kin dx", "kin dy", "stranger dx", "stranger dy",
+    "crowding", "energy", "vel x", "vel y", "signal", "signal dx", "signal dy",
+    "scent A dx", "scent A dy", "scent A", "scent B dx", "scent B dy", "scent B",
+    "bonds", "threat", "season", "memory 1", "memory 2",
+]
+OUTPUT_NAMES = ["thrust x", "thrust y", "attack", "signal", "drop A", "drop B", "bond", "memory 1", "memory 2"]
+
 # Mutation groups, each with its own evolvable step size (genome.sigma[:, group]).
-PERCEPTION, BEHAVIOUR, PHYSICS = 0, 1, 2
-GROUPS = {PERCEPTION: ("w1", "b1"), BEHAVIOUR: ("w2", "b2"), PHYSICS: ("attraction",)}
+PERCEPTION, BEHAVIOUR, PHYSICS, TRAITS = 0, 1, 2, 3
+GROUPS = {PERCEPTION: ("w1", "b1"), BEHAVIOUR: ("w2", "b2"), PHYSICS: ("attraction",),
+          TRAITS: ("body", "bud", "log_eta")}
+BOUNDS = {"attraction": (-1, 1), "body": (0, 1), "bud": (0, 1), "log_eta": (-4, -0.5)}
 
 
 @dataclass
@@ -27,23 +45,23 @@ class Genome:
     b1: torch.Tensor          # (C, hidden)
     w2: torch.Tensor          # (C, hidden, N_OUTPUTS)
     b2: torch.Tensor          # (C, N_OUTPUTS)
-    attraction: torch.Tensor  # (C, n_types)  how strongly this particle is pulled toward each type
+    attraction: torch.Tensor  # (C, n_types)  pull toward each physical type
     color: torch.Tensor       # (C, 3)        kinship marker, drifts slowly down lineages
     ptype: torch.Tensor       # (C,) long     physical type, used by others' attraction rows
-    sigma: torch.Tensor       # (C, 3)        mutation step size per group, itself evolving
+    sigma: torch.Tensor       # (C, 4)        mutation step size per group, itself evolving
+    body: torch.Tensor        # (C, 3)        size, speed, sense genes in [0, 1]
+    bud: torch.Tensor         # (C,)          chance a child stays bonded to its parent
+    log_eta: torch.Tensor     # (C,)          log10 lifetime learning rate
 
     @classmethod
     def empty(cls, cfg: Config) -> "Genome":
         c, h, d = cfg.capacity, cfg.hidden, torch.device(cfg.device)
+        z = lambda *s: torch.zeros(c, *s, device=d)  # noqa: E731
         return cls(
-            w1=torch.zeros(c, N_INPUTS, h, device=d),
-            b1=torch.zeros(c, h, device=d),
-            w2=torch.zeros(c, h, N_OUTPUTS, device=d),
-            b2=torch.zeros(c, N_OUTPUTS, device=d),
-            attraction=torch.zeros(c, cfg.n_types, device=d),
-            color=torch.zeros(c, 3, device=d),
+            w1=z(N_INPUTS, h), b1=z(h), w2=z(h, N_OUTPUTS), b2=z(N_OUTPUTS),
+            attraction=z(cfg.n_types), color=z(3),
             ptype=torch.zeros(c, dtype=torch.long, device=d),
-            sigma=torch.zeros(c, 3, device=d),
+            sigma=z(len(GROUPS)), body=z(3), bud=z(), log_eta=z(),
         )
 
     def tensors(self) -> dict[str, torch.Tensor]:
@@ -62,20 +80,53 @@ class Genome:
         def randn(*shape):
             return torch.randn(n, *shape, generator=gen, device=d)
 
+        def rand(*shape):
+            return torch.rand(n, *shape, generator=gen, device=d)
+
         self.w1[idx] = randn(N_INPUTS, cfg.hidden) / N_INPUTS**0.5
         self.b1[idx] = randn(cfg.hidden) * 0.1
         self.w2[idx] = randn(cfg.hidden, N_OUTPUTS) / cfg.hidden**0.5
         self.b2[idx] = randn(N_OUTPUTS) * 0.1
-        self.attraction[idx] = torch.rand(n, cfg.n_types, generator=gen, device=d) * 2 - 1
-        self.color[idx] = torch.rand(n, 3, generator=gen, device=d)
+        self.attraction[idx] = rand(cfg.n_types) * 2 - 1
+        self.color[idx] = rand(3)
         self.ptype[idx] = torch.randint(0, cfg.n_types, (n,), generator=gen, device=d)
         self.sigma[idx] = cfg.mutation_scale
+        self.body[idx] = 0.3 + rand(3) * 0.4   # start mid-range so evolution can push either way
+        self.bud[idx] = rand() * 0.2
+        self.log_eta[idx] = -3 + rand() * 1.5
 
 
-def think(g: Genome, inputs: torch.Tensor) -> torch.Tensor:
-    """Run every brain at once. inputs (n, N_INPUTS) -> outputs (n, N_OUTPUTS) in [-1, 1]."""
+def think(g: Genome, inputs: torch.Tensor, plastic: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run every brain at once.
+
+    inputs  (n, N_INPUTS); plastic (n, hidden, N_OUTPUTS) lifetime-learned weights.
+    Returns (hidden activations, outputs in [-1, 1]).
+    """
     h = torch.tanh(torch.einsum("ni,nih->nh", inputs, g.w1) + g.b1)
-    return torch.tanh(torch.einsum("nh,nho->no", h, g.w2) + g.b2)
+    out = torch.tanh(torch.einsum("nh,nho->no", h, g.w2 + plastic) + g.b2)
+    return h, out
+
+
+def crossover(g: Genome, child: torch.Tensor, mate: torch.Tensor, gen: torch.Generator) -> None:
+    """Mix a mate's genes into children already holding a copy of their first parent.
+
+    Hidden neurons are inherited as units (incoming + outgoing weights together) so
+    a working feature detector is never torn in half; everything else is per-gene.
+    """
+    n, d = len(child), g.w1.device
+    if n == 0:
+        return
+    hidden = g.w1.shape[-1]
+    take = torch.rand(n, hidden, generator=gen, device=d) < 0.5          # per neuron
+    g.w1[child] = torch.where(take[:, None, :], g.w1[mate], g.w1[child])
+    g.b1[child] = torch.where(take, g.b1[mate], g.b1[child])
+    g.w2[child] = torch.where(take[:, :, None], g.w2[mate], g.w2[child])
+    for name in ("b2", "attraction", "sigma", "body", "bud", "log_eta", "ptype"):
+        t = getattr(g, name)
+        a, b = t[child], t[mate]
+        mask = torch.rand(a.shape, generator=gen, device=d) < 0.5
+        t[child] = torch.where(mask, b, a)
+    g.color[child] = (g.color[child] + g.color[mate]) / 2
 
 
 def mutate(g: Genome, idx: torch.Tensor, cfg: Config, gen: torch.Generator) -> None:
@@ -105,7 +156,8 @@ def mutate(g: Genome, idx: torch.Tensor, cfg: Config, gen: torch.Generator) -> N
 
     # 1. Self-adaptation (mutate the mutator).
     if cfg.sigma_tau > 0:
-        g.sigma[idx] = (g.sigma[idx] * torch.exp(cfg.sigma_tau * randn(n, 3))).clamp(cfg.sigma_min, cfg.sigma_max)
+        g.sigma[idx] = (g.sigma[idx] * torch.exp(cfg.sigma_tau * randn(n, len(GROUPS)))).clamp(
+            cfg.sigma_min, cfg.sigma_max)
     sigma = g.sigma[idx]
 
     # 2. Per-layer rates, each group scaled by its own evolved sigma.
@@ -113,15 +165,20 @@ def mutate(g: Genome, idx: torch.Tensor, cfg: Config, gen: torch.Generator) -> N
         PERCEPTION: cfg.mutation_rate * cfg.perception_rate_mult,
         BEHAVIOUR: cfg.mutation_rate * cfg.behaviour_rate_mult,
         PHYSICS: cfg.mutation_rate * cfg.attraction_rate_mult,
+        TRAITS: cfg.mutation_rate * cfg.traits_rate_mult,
     }
     for group, names in GROUPS.items():
         for name in names:
             t = getattr(g, name)
             values = t[idx]
             scale = sigma[:, group].view(n, *([1] * (values.dim() - 1)))
+            if group == TRAITS and name != "log_eta":
+                scale = scale * 0.25   # [0, 1] genes need smaller steps than weights
             mask = rand(*values.shape) < rates[group]
-            t[idx] = values + mask * randn(*values.shape) * scale
-    g.attraction[idx] = g.attraction[idx].clamp(-1, 1)
+            values = values + mask * randn(*values.shape) * scale
+            if name in BOUNDS:
+                values = values.clamp(*BOUNDS[name])
+            t[idx] = values
 
     # 3. Sparse, large jumps: wipe and redraw one hidden neuron's in/out weights.
     reset = idx[rand(n) < cfg.neuron_reset_prob]
