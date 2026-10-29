@@ -473,6 +473,7 @@ class World:
             self.energy.index_add_(0, mates[mated], -gift[mated])
 
         self._reset_slots(children)
+        self.species_id[children] = self.species_id[parents]   # until the next clustering pass
         self.energy[parents] = share
         self.energy[children] = share + gift
         self.pos[children] = (self.pos[parents] + self._randn(k, 2) * 0.01) % cfg.world_size

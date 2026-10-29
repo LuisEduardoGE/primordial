@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import importlib
 import time
 
 from .config import Config
@@ -72,6 +73,14 @@ def main() -> None:
     r.add_argument("--log", help="CSV file for stats")
     r.add_argument("--save", help="checkpoint to write at the end")
     r.set_defaults(func=cmd_run)
+
+    # Optional tools register their own subcommands (timelapse, experiment, discover).
+    for module in ("timelapse", "experiments", "discovery"):
+        try:
+            mod = importlib.import_module(f".{module}", __package__)
+        except ImportError:
+            continue
+        mod.add_subparser(sub)
 
     args = p.parse_args()
     args.func(args)
