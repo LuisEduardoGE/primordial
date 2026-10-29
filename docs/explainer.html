@@ -211,7 +211,7 @@ footer { max-width: 760px; margin: 56px auto 0; border-top: 1px solid var(--line
     <figcaption>A simplified illustration, not the real simulation: both sides have the same number of particles and the same food. The only difference is the behaviour that evolution has selected.</figcaption>
   </figure>
 
-  <p>A particle's genome even contains its own <b>mutation size</b>: how big its random changes are. That setting is inherited and evolves too, so the population gradually tunes how adventurous its copying errors are.</p>
+  <p>How big should those random changes be? We tested a version where each creature also inherits its own <b>mutation size</b>, so evolution could tune how adventurous its copying errors are. It sounded clever, but it did not help (see the results below), so the simulation now uses a fixed mutation size. The clever version is still available as an option for experiments.</p>
 </section>
 
 <section aria-labelledby="learning">
@@ -279,7 +279,7 @@ footer { max-width: 760px; margin: 56px auto 0; border-top: 1px solid var(--line
 <section aria-labelledby="glossary">
   <h2 id="glossary">Glossary</h2>
   <dl class="terms">
-    <dt>Genome</dt><dd>Everything a particle inherits: brain settings, body measurements, colour, and how much it mutates.</dd>
+    <dt>Genome</dt><dd>Everything a particle inherits: brain settings, body measurements, colour, how readily it learns, and how likely its children are to stay attached to it.</dd>
     <dt>Mutation</dt><dd>A small random change made when a genome is copied to a child.</dd>
     <dt>Generation</dt><dd>How many parents separate a particle from the first, randomly created ancestor.</dd>
     <dt>Neural network</dt><dd>A web of simple connected units that turns numbers in (senses) into numbers out (actions). The connection strengths decide its behaviour.</dd>

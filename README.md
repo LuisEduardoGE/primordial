@@ -54,7 +54,7 @@ Each simulation step (`World.step` in `primordial/world.py`):
 
 The genome holds the brain weights, particle-life attractions, body genes (size, speed, sense), a budding probability, a learning rate, a kinship colour, and four self-adaptive mutation step sizes.
 
-Mutation stacks three mechanisms: self-adaptive step sizes, per-layer rates, and occasional whole-neuron resets. Setting `sigma_tau=0 neuron_reset_prob=0` and every `*_rate_mult=1` gives plain fixed-step mutation.
+Mutation is plain fixed-step Gaussian noise by default. Three optional mechanisms can be switched on: self-adaptive step sizes (`sigma_tau=0.2`), per-layer rates (`perception_rate_mult=0.5 behaviour_rate_mult=1.5`), and whole-neuron resets (`neuron_reset_prob=0.05`). They were the default until the experiment below found no benefit.
 
 Analysis runs alongside the simulation:
 - Every particle has a lineage ID, so the family tree of the living population can be extracted (`lineage.py`).

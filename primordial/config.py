@@ -99,15 +99,16 @@ class Config:
 
     # --- mutation ---
     mutation_rate: float = 0.1       # fraction of weights touched per birth (before layer multipliers)
-    mutation_scale: float = 0.2      # starting step size; evolves if sigma_tau > 0
-    perception_rate_mult: float = 0.5   # input layer: change how the world is perceived slowly
-    behaviour_rate_mult: float = 1.5    # output layer: change what to do with it faster
+    mutation_scale: float = 0.2      # step size (a starting value that evolves if sigma_tau > 0)
+    perception_rate_mult: float = 1.0   # input-layer rate multiplier (0.5 = perceive-slowly variant)
+    behaviour_rate_mult: float = 1.0    # output-layer rate multiplier (1.5 = act-fast variant)
     attraction_rate_mult: float = 1.0   # particle-life physics
     traits_rate_mult: float = 1.0       # body, budding, learning rate
-    sigma_tau: float = 0.2           # self-adaptation speed of step sizes (0 = fixed step size)
+    sigma_tau: float = 0.0           # self-adaptation speed of step sizes; 0 = fixed (default: in
+                                     # experiments/mutation.json, 0.2 was not better)
     sigma_min: float = 0.01
     sigma_max: float = 1.0
-    neuron_reset_prob: float = 0.05  # chance a birth re-randomises one whole hidden neuron
+    neuron_reset_prob: float = 0.0   # chance a birth re-randomises one whole hidden neuron
     color_drift: float = 0.05
     type_flip_prob: float = 0.01
 

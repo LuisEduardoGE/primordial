@@ -132,7 +132,8 @@ def crossover(g: Genome, child: torch.Tensor, mate: torch.Tensor, gen: torch.Gen
 def mutate(g: Genome, idx: torch.Tensor, cfg: Config, gen: torch.Generator) -> None:
     """Mutate the freshly-copied genomes of newborn particles at slots `idx`.
 
-    Three mechanisms stack:
+    Three optional mechanisms stack on plain Gaussian mutation (all off by default,
+    since experiments/mutation.json found no benefit):
       1. self-adaptation  each group's step size sigma is log-normally perturbed first,
                           then used, so good step sizes hitch-hike with good weights
       2. per-layer rates  perception mutates rarely, behaviour often
