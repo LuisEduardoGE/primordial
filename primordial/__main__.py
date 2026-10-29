@@ -3,7 +3,10 @@
 import argparse
 import csv
 import importlib
+import os
 import time
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # keep CLI output clean
 
 from .config import Config
 from .world import World

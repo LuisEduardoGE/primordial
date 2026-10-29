@@ -1,0 +1,372 @@
+<title>How Primordial Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: a single readable column like a lab notebook, with figures that may run a little wider. */
+:root {
+  --bg: #f6f7f4;
+  --surface: #ffffff;
+  --fg: #1d2420;
+  --muted: #59635e;
+  --line: #d8ddd7;
+  --accent: #2e6b5e;
+  --accent-soft: #e3eee9;
+  --food: #6f8f2f;
+  --danger: #b2473d;
+  --c1: #4e79a7; --c2: #e1813a; --c3: #59a14f; --c4: #b07aa1; --c5: #76b7b2;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141816; --surface: #1b201d; --fg: #e4e8e4; --muted: #9aa49f; --line: #2e3531;
+    --accent: #7cc2b0; --accent-soft: #20302b; --food: #a6c46a; --danger: #e07a6f;
+    --c1: #7ba4d0; --c2: #f0a165; --c3: #86c47c; --c4: #cfa0c3; --c5: #9ad3cf;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141816; --surface: #1b201d; --fg: #e4e8e4; --muted: #9aa49f; --line: #2e3531;
+  --accent: #7cc2b0; --accent-soft: #20302b; --food: #a6c46a; --danger: #e07a6f;
+  --c1: #7ba4d0; --c2: #f0a165; --c3: #86c47c; --c4: #cfa0c3; --c5: #9ad3cf;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font: 17px/1.65 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+main { max-width: 760px; margin: 0 auto; display: grid; gap: 56px; }
+header.top { max-width: 760px; margin: 0 auto; padding-block: 48px 8px; display: grid; gap: 14px; }
+.label { font: 500 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-weight: 600; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; margin: 0; text-wrap: balance; }
+h2 { font-weight: 600; font-size: 25px; line-height: 1.25; margin: 0 0 4px; text-wrap: balance; }
+h3 { font-weight: 600; font-size: 18px; margin: 0; }
+p { margin: 0; max-width: 65ch; }
+.lede { font-size: 20px; color: var(--muted); max-width: 60ch; }
+section { display: grid; gap: 16px; }
+.muted { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: .88em; }
+code { background: var(--accent-soft); padding: 1px 6px; border-radius: 4px; }
+
+.summary { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 20px 22px; display: grid; gap: 12px; }
+.summary ol { margin: 0; padding-left: 22px; display: grid; gap: 8px; }
+
+figure { margin: 0; display: grid; gap: 10px; }
+figcaption { font-size: 14px; color: var(--muted); max-width: 65ch; }
+.fig { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 16px; overflow-x: auto; }
+svg text { font-family: var(--sans); fill: var(--fg); }
+svg .t-muted { fill: var(--muted); }
+svg .t-small { font-size: 12px; }
+svg .t-mono { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+svg .stroke { stroke: var(--line); fill: none; }
+svg .ink { stroke: var(--fg); fill: none; }
+svg .box { fill: var(--surface); stroke: var(--line); }
+svg .accent-box { fill: var(--accent-soft); stroke: var(--accent); }
+svg .arrow { stroke: var(--muted); fill: none; stroke-width: 1.4; }
+svg .arrowhead { fill: var(--muted); }
+
+.terms { display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; margin: 0; }
+.terms dt { font-weight: 600; }
+.terms dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { .terms { grid-template-columns: 1fr; gap: 2px; } .terms dd { margin-bottom: 10px; } }
+
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.legend div { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 12px 14px; }
+.legend svg { flex: none; margin-top: 3px; }
+.legend p { font-size: 15px; }
+
+.species { display: grid; gap: 10px; }
+.sp { display: grid; grid-template-columns: 14px 120px 1fr; gap: 12px; align-items: baseline; }
+.sp .dot { width: 12px; height: 12px; border-radius: 50%; align-self: center; }
+.sp b { font-weight: 600; }
+@media (max-width: 560px) { .sp { grid-template-columns: 14px 1fr; } .sp p { grid-column: 2; } }
+
+.demo { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 620px) { .demo { grid-template-columns: 1fr; } }
+.panel { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: 0; }
+.panel canvas { width: 100%; aspect-ratio: 4 / 3; display: block; border-radius: 4px; background: var(--bg); }
+.panel .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.panel .count { font: 500 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.controls { display: flex; gap: 10px; flex-wrap: wrap; }
+button { font: 500 14px var(--sans); color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.results { border-collapse: collapse; width: 100%; font-size: 15px; }
+.results th, .results td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.results th { font-weight: 600; font-size: 13px; color: var(--muted); }
+.results td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+.note { border-left: 3px solid var(--accent); padding: 4px 0 4px 14px; color: var(--muted); }
+pre { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font: 14px/1.6 var(--mono); }
+footer { max-width: 760px; margin: 56px auto 0; border-top: 1px solid var(--line); padding-top: 16px; font-size: 14px; color: var(--muted); }
+</style>
+
+<header class="top">
+  <div class="label">Primordial · plain-language guide</div>
+  <h1>A digital petri dish where behaviour evolves by itself</h1>
+  <p class="lede">Primordial simulates a few hundred to a few thousand tiny creatures. Each one has a small artificial brain. Nobody tells them what to do. Over time, the ones that happen to behave well leave more offspring, and their behaviour spreads. This page explains what you are looking at, step by step.</p>
+</header>
+
+<main>
+
+<section aria-labelledby="short">
+  <h2 id="short">The short version</h2>
+  <div class="summary">
+    <ol>
+      <li>Every dot on the screen is a <b>particle</b>: a simple creature with a body, an energy reserve and a brain.</li>
+      <li>Living costs energy. A particle gets energy back by <b>eating food</b> (the small dots) or by <b>attacking</b> other particles.</li>
+      <li>A particle with enough energy <b>splits in two</b>. The child gets a copy of the parent's brain and body, with a few small random changes.</li>
+      <li>A particle that runs out of energy <b>dies</b>.</li>
+      <li>Repeat this millions of times. Changes that help a particle survive get passed on; changes that hurt it disappear. That is <b>evolution</b>, and it is the only thing shaping their behaviour.</li>
+    </ol>
+  </div>
+</section>
+
+<section aria-labelledby="particle">
+  <h2 id="particle">Meet one particle</h2>
+  <p>A particle is a circle that moves around a flat world. When it reaches one edge it comes back on the opposite side, like in old arcade games, so there are no walls. Each particle has three parts.</p>
+  <figure>
+    <div class="fig">
+      <svg viewBox="0 0 700 270" width="100%" role="img" aria-label="Diagram of a particle: a body with size, speed and sense range, a brain that turns senses into actions, and an energy bar.">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker></defs>
+        <!-- body -->
+        <circle cx="120" cy="130" r="78" class="stroke" stroke-dasharray="4 5"/>
+        <circle cx="120" cy="130" r="26" style="fill: var(--c1)"/>
+        <text x="120" y="38" text-anchor="middle" class="t-small t-muted">sense range</text>
+        <text x="120" y="232" text-anchor="middle" font-weight="600">Body</text>
+        <text x="120" y="252" text-anchor="middle" class="t-small t-muted">size · speed · sense</text>
+        <!-- brain -->
+        <rect x="270" y="58" width="180" height="140" rx="8" class="accent-box"/>
+        <g style="fill: var(--accent)">
+          <circle cx="300" cy="90" r="5"/><circle cx="300" cy="118" r="5"/><circle cx="300" cy="146" r="5"/><circle cx="300" cy="174" r="5"/>
+          <circle cx="360" cy="104" r="5"/><circle cx="360" cy="132" r="5"/><circle cx="360" cy="160" r="5"/>
+          <circle cx="420" cy="112" r="5"/><circle cx="420" cy="146" r="5"/>
+        </g>
+        <g class="ink" stroke-width=".6" opacity=".5">
+          <path d="M300 90 L360 104 M300 90 L360 132 M300 118 L360 104 M300 118 L360 160 M300 146 L360 132 M300 146 L360 160 M300 174 L360 132 M300 174 L360 104"/>
+          <path d="M360 104 L420 112 M360 104 L420 146 M360 132 L420 112 M360 160 L420 146 M360 132 L420 146"/>
+        </g>
+        <text x="360" y="232" text-anchor="middle" font-weight="600">Brain</text>
+        <text x="360" y="252" text-anchor="middle" class="t-small t-muted">a small neural network</text>
+        <path d="M205 130 L262 130" class="arrow" marker-end="url(#ah)"/>
+        <text x="233" y="120" text-anchor="middle" class="t-mono">senses</text>
+        <!-- actions -->
+        <path d="M458 130 L512 130" class="arrow" marker-end="url(#ah)"/>
+        <text x="485" y="120" text-anchor="middle" class="t-mono">decides</text>
+        <g class="t-small">
+          <text x="522" y="78">move</text>
+          <text x="522" y="102">attack or not</text>
+          <text x="522" y="126">signal to others</text>
+          <text x="522" y="150">leave a scent trail</text>
+          <text x="522" y="174">hold on to a relative</text>
+        </g>
+        <text x="600" y="232" text-anchor="middle" font-weight="600">Actions</text>
+        <text x="600" y="252" text-anchor="middle" class="t-small t-muted">every one costs energy</text>
+      </svg>
+    </div>
+    <figcaption>A particle senses its surroundings, its brain turns those readings into decisions, and the decisions become actions. All of this happens 50 times per simulated second.</figcaption>
+  </figure>
+  <dl class="terms">
+    <dt>Body</dt><dd>How big it is, how fast it can move and how far it can see. Bigger bodies store more energy and can overpower smaller ones, but they burn more energy just staying alive. Better eyes and faster legs also have running costs. Every advantage has a price.</dd>
+    <dt>Brain</dt><dd>A tiny neural network: about 25 inputs, 16 internal units and 9 outputs. It is the same basic idea used in modern AI, just very small. It starts out random, so newborn creatures of the first generation behave aimlessly.</dd>
+    <dt>Energy</dt><dd>The particle's fuel and its score at the same time. Running out means death. Collecting enough means reproduction.</dd>
+  </dl>
+</section>
+
+<section aria-labelledby="moment">
+  <h2 id="moment">One moment in its life</h2>
+  <p>Every step of the simulation, each particle does the same four things:</p>
+  <dl class="terms">
+    <dt>1. Sense</dt><dd>Where is the nearest food? Are there relatives nearby, or strangers? Is a stranger bigger than me? Is someone signalling? Is there a scent trail, and which way does it get stronger? How much energy do I have left? What season is it?</dd>
+    <dt>2. Decide</dt><dd>The brain combines all those readings and produces its decisions. It also keeps two numbers of short-term memory, so it can react to what happened a moment ago.</dd>
+    <dt>3. Act</dt><dd>It pushes itself in some direction, may attack a stranger it is touching, may glow to signal others, may drop scent, and may bond with a relative it is touching.</dd>
+    <dt>4. Pay</dt><dd>Energy is subtracted for being alive, for its body, and for every action. If it is touching food, it eats and gains energy.</dd>
+  </dl>
+</section>
+
+<section aria-labelledby="evolve">
+  <h2 id="evolve">How does it get better without being taught?</h2>
+  <p>Think of a recipe that gets photocopied over and over, where each copy picks up a small random typo. Most typos make the dish slightly worse. Once in a while one makes it better. Now imagine that cooks who make better dishes get to hand out more copies. After many rounds, the recipes in circulation are good ones, even though nobody ever sat down to improve them.</p>
+  <p>That is exactly what happens here. The "recipe" is a particle's <b>genome</b>: its brain's settings and its body measurements. When a particle splits, its child's genome is copied with small random changes called <b>mutations</b>. Children whose changes help them find food or avoid predators live longer and split more often, so those changes spread. Two compatible relatives can also <b>mate</b>, and their child mixes both parents' genomes.</p>
+
+  <figure>
+    <div class="demo">
+      <div class="panel">
+        <div class="head"><h3>Generation 0</h3><span class="count" id="count-a">food eaten: 0</span></div>
+        <canvas id="demo-a" width="400" height="300" aria-label="Animation: particles with random brains wander aimlessly"></canvas>
+        <p class="muted" style="font-size:14px">Random brains: the particles wander and only find food by accident.</p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>After evolution</h3><span class="count" id="count-b">food eaten: 0</span></div>
+        <canvas id="demo-b" width="400" height="300" aria-label="Animation: evolved particles steer toward food"></canvas>
+        <p class="muted" style="font-size:14px">Evolved brains: the particles have inherited the habit of turning toward food.</p>
+      </div>
+    </div>
+    <div class="controls"><button id="demo-toggle" type="button">Pause</button><button id="demo-reset" type="button">Restart</button></div>
+    <figcaption>A simplified illustration, not the real simulation: both sides have the same number of particles and the same food. The only difference is the behaviour that evolution has selected.</figcaption>
+  </figure>
+
+  <p>A particle's genome even contains its own <b>mutation size</b>: how big its random changes are. That setting is inherited and evolves too, so the population gradually tunes how adventurous its copying errors are.</p>
+</section>
+
+<section aria-labelledby="learning">
+  <h2 id="learning">Where is the machine learning?</h2>
+  <p>Most AI you hear about learns from a large collection of examples. Primordial has no examples and no teacher. It uses two kinds of learning instead.</p>
+  <dl class="terms">
+    <dt>Learning across generations</dt><dd>Evolution, as described above. The technical name is <b>neuroevolution</b>: improving neural networks by selection and mutation instead of by training on data.</dd>
+    <dt>Learning within a lifetime</dt><dd>Each brain can also adjust itself while the particle is alive. When an action is followed by a gain in energy, the connections that produced it get slightly stronger; when energy drops, they weaken. This is a simple form of <b>reward-based learning</b>. How quickly each particle learns is itself an inherited trait.</dd>
+    <dt>Recognising species</dt><dd>A separate algorithm (<b>k-means clustering</b>) looks at what every particle is and does, groups similar ones together, and gives each group a name. Nobody defines the species in advance.</dd>
+  </dl>
+</section>
+
+<section aria-labelledby="emerged">
+  <h2 id="emerged">What tends to emerge</h2>
+  <p>None of these strategies is written into the program. They appear because they work. The automatic species detector names groups by what they do:</p>
+  <div class="species">
+    <div class="sp"><span class="dot" style="background:var(--c3)"></span><b>Grazers</b><p>Get almost all their energy from food. Usually the majority.</p></div>
+    <div class="sp"><span class="dot" style="background:var(--c2)"></span><b>Hunters</b><p>Get a large share of their energy by attacking other particles. They need to be big enough to overpower their prey.</p></div>
+    <div class="sp"><span class="dot" style="background:var(--c1)"></span><b>Colonial</b><p>Particles that stay bonded to relatives and share energy along the bonds, forming chains and clusters that behave like small multi-celled organisms.</p></div>
+    <div class="sp"><span class="dot" style="background:var(--c4)"></span><b>Signallers</b><p>Particles that glow strongly. Others can sense the glow, so signals can come to mean things like "food here".</p></div>
+    <div class="sp"><span class="dot" style="background:var(--c5)"></span><b>Trail-layers</b><p>Particles that leave scent behind them, which others can follow, much like ants.</p></div>
+  </div>
+  <p class="muted">In one run of the desktop version, after about 2,000 steps, the detector counted 122 grazers, 56 particles in a second grazer group, 51 signallers, 34 colonial particles and 6 hunters.</p>
+</section>
+
+<section aria-labelledby="screen">
+  <h2 id="screen">Reading the screen</h2>
+  <div class="legend">
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="8" cy="15" r="5" style="fill:var(--c1)"/><circle cx="19" cy="13" r="7" style="fill:var(--c1)"/></svg><p><b>Circle size</b> shows body size.</p></div>
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="8" cy="13" r="6" style="fill:var(--c2)"/><circle cx="19" cy="13" r="6" style="fill:var(--c4)"/></svg><p><b>Colour</b> shows family. Relatives have similar colours, and colours drift slowly from generation to generation.</p></div>
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="13" cy="13" r="7" style="fill:var(--c1);stroke:var(--danger);stroke-width:2"/></svg><p><b>Red outline</b>: this particle is attacking right now.</p></div>
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="6" cy="16" r="4" style="fill:var(--c3)"/><circle cx="20" cy="9" r="4" style="fill:var(--c3)"/><line x1="6" y1="16" x2="20" y2="9" style="stroke:var(--muted);stroke-width:1.5"/></svg><p><b>Line between particles</b>: a bond. Bonded particles move together and share energy.</p></div>
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="7" cy="9" r="2" style="fill:var(--food)"/><circle cx="16" cy="15" r="2" style="fill:var(--food)"/><circle cx="20" cy="7" r="2" style="fill:var(--food)"/></svg><p><b>Small dots</b> are food. Most food grows in a few fertile areas that drift slowly around the world.</p></div>
+    <div><svg width="26" height="26" aria-hidden="true"><circle cx="13" cy="13" r="10" style="fill:none;stroke:var(--muted);stroke-dasharray:3 3"/></svg><p><b>Faint ring</b>: a fertile area. Food is richer there and it slowly moves, so creatures must keep finding it.</p></div>
+  </div>
+  <p>Food also grows faster and slower in a slow cycle of <b>seasons</b>, so a strategy that works in plenty might fail in a lean season.</p>
+</section>
+
+<section aria-labelledby="measured">
+  <h2 id="measured">What has been measured so far</h2>
+  <p>To check that evolution is really producing better behaviour, evolved particles were placed in a fresh world together with particles that had random brains, 100 of each, and left to compete.</p>
+  <div class="table-wrap">
+    <table class="results">
+      <thead><tr><th>Experiment</th><th>Result</th><th>What it means</th></tr></thead>
+      <tbody>
+        <tr><td>Evolved brains vs random brains</td><td class="num">5 of 5 trials</td><td>The random group died out every time. Evolution clearly produces better survivors.</td></tr>
+        <tr><td>"Smart" mutation vs simple mutation (8 separate worlds each)</td><td class="num">simple won in 6 of 8 worlds</td><td>The smarter-sounding method, where creatures also evolve how much they mutate, did <b>not</b> do better. If anything the simple method did slightly better, but the difference is not large enough to be sure.</td></tr>
+        <tr><td>Searching for interesting worlds (24 worlds tried)</td><td class="num">9 distinct kinds found</td><td>The richest ecosystems had plenty of food, strong seasons, and creatures that share energy with their relatives.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Why run the same test in 8 worlds? Evolution involves chance. One world can favour a method by luck, so a fair comparison repeats the test in many independently started worlds and checks whether the difference holds up. In the earlier two-world test, one world favoured each method, which is exactly the kind of luck this guards against.</p>
+</section>
+
+<section aria-labelledby="run">
+  <h2 id="run">How to run it</h2>
+  <p>There are two versions. The <b>desktop version</b> (Python) is the research tool: it can run experiments, record videos and draw the family tree. The <b>browser version</b> runs a larger world, around 3,000 to 4,500 particles, with nothing to install.</p>
+<pre>cd primordial
+.venv/Scripts/python -m primordial view                     # watch it live
+.venv/Scripts/python -m primordial run --steps 20000 --save run.pt
+.venv/Scripts/python -m primordial timelapse --load run.pt --out evolution.mp4</pre>
+  <p class="muted">In the desktop viewer, click any particle to see its body, its family and its brain working live. Press <code>F</code> for the family tree and <code>G</code> for the settings panel.</p>
+</section>
+
+<section aria-labelledby="glossary">
+  <h2 id="glossary">Glossary</h2>
+  <dl class="terms">
+    <dt>Genome</dt><dd>Everything a particle inherits: brain settings, body measurements, colour, and how much it mutates.</dd>
+    <dt>Mutation</dt><dd>A small random change made when a genome is copied to a child.</dd>
+    <dt>Generation</dt><dd>How many parents separate a particle from the first, randomly created ancestor.</dd>
+    <dt>Neural network</dt><dd>A web of simple connected units that turns numbers in (senses) into numbers out (actions). The connection strengths decide its behaviour.</dd>
+    <dt>Lineage</dt><dd>A family line. "Effective lineages" estimates how many distinct families share the world right now.</dd>
+    <dt>Predation share</dt><dd>The fraction of all energy that came from attacking other particles rather than from food.</dd>
+    <dt>Pheromone</dt><dd>Scent left on the ground. It spreads out and fades over time.</dd>
+    <dt>Abiogenesis</dt><dd>If the population ever falls too low, new random particles are added so the world never empties. A healthy world rarely needs this.</dd>
+  </dl>
+</section>
+
+</main>
+
+<footer>Primordial · neuroevolution and artificial life in PyTorch and TypeScript.</footer>
+
+<script>
+(() => {
+  const css = getComputedStyle(document.documentElement);
+  const col = (name) => css.getPropertyValue(name).trim();
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const W = 400, H = 300, N = 18, FOOD = 22;
+
+  function makeWorld(seed) {
+    let s = seed;
+    const rand = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    const parts = Array.from({ length: N }, () => ({ x: rand() * W, y: rand() * H, a: rand() * Math.PI * 2 }));
+    const food = Array.from({ length: FOOD }, () => ({ x: rand() * W, y: rand() * H }));
+    return { rand, parts, food, eaten: 0 };
+  }
+
+  function step(world, evolved) {
+    const { parts, food, rand } = world;
+    for (const p of parts) {
+      if (evolved) {
+        let best = null, bd = 1e9;
+        for (const f of food) {
+          const dx = f.x - p.x, dy = f.y - p.y, d = dx * dx + dy * dy;
+          if (d < bd) { bd = d; best = f; }
+        }
+        if (best && bd < 90 * 90) {
+          const target = Math.atan2(best.y - p.y, best.x - p.x);
+          let diff = target - p.a;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+          p.a += diff * 0.12;
+        }
+        p.a += (rand() - 0.5) * 0.25;
+      } else {
+        p.a += (rand() - 0.5) * 0.9;
+      }
+      p.x = (p.x + Math.cos(p.a) * 1.4 + W) % W;
+      p.y = (p.y + Math.sin(p.a) * 1.4 + H) % H;
+      for (const f of food) {
+        const dx = f.x - p.x, dy = f.y - p.y;
+        if (dx * dx + dy * dy < 49) { f.x = rand() * W; f.y = rand() * H; world.eaten++; }
+      }
+    }
+  }
+
+  function draw(ctx, world, colour) {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = col('--food');
+    for (const f of world.food) { ctx.beginPath(); ctx.arc(f.x, f.y, 2.4, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = colour;
+    ctx.strokeStyle = col('--fg');
+    ctx.lineWidth = 0.6;
+    for (const p of world.parts) {
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+
+  const ca = document.getElementById('demo-a').getContext('2d');
+  const cb = document.getElementById('demo-b').getContext('2d');
+  const countA = document.getElementById('count-a'), countB = document.getElementById('count-b');
+  let a, b, running = !reduced;
+  const reset = () => { a = makeWorld(7); b = makeWorld(7); render(); };
+  const render = () => {
+    draw(ca, a, col('--c1')); draw(cb, b, col('--c3'));
+    countA.textContent = 'food eaten: ' + a.eaten;
+    countB.textContent = 'food eaten: ' + b.eaten;
+  };
+  const toggle = document.getElementById('demo-toggle');
+  toggle.textContent = running ? 'Pause' : 'Play';
+  toggle.addEventListener('click', () => { running = !running; toggle.textContent = running ? 'Pause' : 'Play'; });
+  document.getElementById('demo-reset').addEventListener('click', reset);
+  reset();
+  (function loop() {
+    if (running) { step(a, false); step(b, true); render(); }
+    requestAnimationFrame(loop);
+  })();
+})();
+</script>
