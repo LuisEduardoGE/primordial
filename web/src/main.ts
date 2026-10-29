@@ -7,7 +7,7 @@ import { Chart } from './ui/chart';
 import { Inspector } from './ui/inspector';
 import { setupControls, selectSegment, type UiState } from './ui/controls';
 import { attachInput } from './ui/input';
-import { DEFAULT_SCALE } from './sim/config';
+import { DEFAULT_SCALE, PY_DEFAULTS } from './sim/config';
 
 const params = new URLSearchParams(location.search);
 let seed = Number(params.get('seed') ?? 1) || 0;
@@ -18,7 +18,22 @@ const state: UiState = {
   speed: Number(params.get('speed') ?? 4) || 4,
   colorMode: 'lineage',
   tool: 'inspect',
-  layers: { pheromone: true, food: true, patches: true, bonds: true, trails: false, glow: true },
+  layers: { pheromone: false, food: true, patches: true, bonds: true, trails: false, glow: false },
+  dark: initialDark(),
+};
+document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
+let climateAmplitude = PY_DEFAULTS.climateAmplitude;
+
+function initialDark(): boolean {
+  const t = params.get('theme');
+  if (t) return t === 'dark';
+  try { return localStorage.getItem('primordial-theme') === 'dark'; } catch { return false; }
+}
+
+const LEGEND_COLOUR: Record<string, string> = {
+  lineage: 'Colour = lineage (family)',
+  species: 'Colour = behavioural species',
+  type: 'Colour = physical type',
 };
 
 let channel: SimChannel | null = null;
@@ -51,8 +66,14 @@ const controls = setupControls(state, {
   onReset: (s, sc) => reset(s, sc),
   onStep: () => { state.paused = true; controls.syncPlay(); pendingSteps += 1; },
   onFit: () => view?.cam.fit(),
-  onParam: (key, value) => send({ type: 'param', key, value }),
+  onParam: (key, value) => { if (key === 'climateAmplitude') climateAmplitude = value; send({ type: 'param', key, value }); },
   onLayers: () => { if (view) { view.layers = state.layers; view.clearTrails(); } },
+  onTheme: (dark) => {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    view?.setTheme(dark);
+    try { localStorage.setItem('primordial-theme', dark ? 'dark' : 'light'); } catch { /* storage unavailable */ }
+  },
+  onColorMode: (mode) => { document.querySelector('#legendColour span')!.textContent = LEGEND_COLOUR[mode]; },
 });
 controls.setSeed(seed);
 controls.setScale(scale);
@@ -68,7 +89,7 @@ function reset(s: number, sc: number): void {
   inspector.hide();
   send({ type: 'reset', seed, scale });
   controls.resetParams();
-  toast(`New world · seed ${seed}`);
+  toast(`New world started (seed ${seed}).`);
 }
 
 function onMessage(m: ToMain): void {
@@ -83,6 +104,7 @@ function onMessage(m: ToMain): void {
     }
     view = new View(canvas, m.worldSize, m.capacity, m.foodCapacity, m.pheromoneRes, m.patchRadius);
     view.layers = state.layers;
+    view.setTheme(state.dark);
     attachInput(canvas, view, state, {
       click: (wx, wy, uwx, uwy) => clickTool(wx, wy, uwx, uwy),
       toggleHud: () => {},
@@ -111,11 +133,10 @@ function clickTool(wx: number, wy: number, uwx: number, uwy: number): void {
     send({ type: 'select', x: wx, y: wy, radius: Math.max(0.03, 18 / view.cam.pxPerUnit) });
   } else if (state.tool === 'food') {
     send({ type: 'tool', tool: 'food', x: wx, y: wy });
-    view.burst(uwx, uwy, 0x7ee787, 0.09, 700);
+    view.burst(uwx, uwy, view.theme.food, 0.08, 700);
   } else {
     send({ type: 'tool', tool: 'meteor', x: wx, y: wy });
-    view.burst(uwx, uwy, 0xffa24a, 0.3, 1100);
-    view.burst(uwx, uwy, 0xff5e3a, 0.18, 800);
+    view.burst(uwx, uwy, view.theme.ink, 0.15, 1200);   // exactly the removal radius
   }
 }
 
@@ -153,7 +174,7 @@ function loop(now: number): void {
     : 0;
   view.render(now);
   if (lastStats && frameNo % 4 === 0) {
-    hud.update(lastStats, fps, sps, state.paused);
+    hud.update(lastStats, fps, sps, state.paused, climateAmplitude);
     chart.draw();
     perf.textContent = `${lastStats.population} particles · ${fps.toFixed(0)} fps · ${sps.toFixed(0)} steps/s · ${stepMs.toFixed(1)} ms/step · sim on ${channel?.mode === 'main' ? 'main thread' : 'worker'}`;
   }
@@ -172,8 +193,8 @@ window.addEventListener('keydown', (e) => {
     case '1': selectSegment('colorMode', 'lineage'); break;
     case '2': selectSegment('colorMode', 'species'); break;
     case '3': selectSegment('colorMode', 'type'); break;
-    case 't': case 'T': (document.querySelector('[data-l="trails"]') as HTMLButtonElement).click(); break;
-    case 'p': case 'P': (document.querySelector('[data-l="pheromone"]') as HTMLButtonElement).click(); break;
+    case 't': case 'T': (document.querySelector('[data-l="trails"]') as HTMLInputElement).click(); break;
+    case 'p': case 'P': (document.querySelector('[data-l="pheromone"]') as HTMLInputElement).click(); break;
     case 'f': case 'F': view?.cam.fit(); break;
     case 'Escape': inspector.onClose(); break;
   }
@@ -182,7 +203,7 @@ window.addEventListener('keydown', (e) => {
 createChannel(params.get('thread')).then((ch) => {
   channel = ch;
   ch.onmessage = onMessage;
-  if (ch.mode === 'main' && !params.get('thread')) toast('Worker threads are throttled on this device: simulating on the main thread.');
+  if (ch.mode === 'main' && !params.get('thread')) toast('Background threads are slow on this device; the simulation runs on the main thread.');
   send({ type: 'init', seed, scale });
   requestAnimationFrame(loop);
 });

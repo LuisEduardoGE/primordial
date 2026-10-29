@@ -1,5 +1,5 @@
 /**
- * three.js scene: pheromone field, fertile patches, food, trails, bonds, glow and bodies.
+ * three.js scene: pheromone field, fertile patches, food, trails, bonds, signal rings and bodies.
  * The torus is shown by drawing every layer in a 3x3 tiling around the camera centre
  * (geometry and materials are shared, so tiles cost only draw calls).
  */
@@ -14,12 +14,19 @@ export interface Layers { pheromone: boolean; food: boolean; patches: boolean; b
 
 type Drawable = THREE.Points | THREE.Mesh | THREE.LineSegments;
 
+export interface Theme { bg: number; ink: number; food: number; patch: number; patchAlpha: number; bond: number; phero: number; outlineMix: number }
+
+export const THEMES: { light: Theme; dark: Theme } = {
+  light: { bg: 0xfafaf9, ink: 0x1c1917, food: 0x7d9a6e, patch: 0x5f8a52, patchAlpha: 0.07, bond: 0x8f949b, phero: 0x3b6ea8, outlineMix: 0.38 },
+  dark: { bg: 0x141416, ink: 0xf5f5f4, food: 0x8fae80, patch: 0x7fb070, patchAlpha: 0.07, bond: 0x6b7078, phero: 0x6b9bd1, outlineMix: 0.45 },
+};
+
 export class View {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
   cam: Camera2D;
   W: number;
-  layers: Layers = { pheromone: true, food: true, patches: true, bonds: true, trails: false, glow: true };
+  layers: Layers = { pheromone: false, food: true, patches: true, bonds: true, trails: false, glow: false };
   private tiles: THREE.Group[] = [];
   private pGeo: THREE.BufferGeometry;
   private pBuf: THREE.InterleavedBuffer;
@@ -33,12 +40,13 @@ export class View {
   private selGeo = new THREE.BufferGeometry();
   private selMat: THREE.ShaderMaterial;
   private fx: { mesh: THREE.Points; t0: number; dur: number }[] = [];
+  private mats!: { phero: THREE.ShaderMaterial; patch: THREE.ShaderMaterial; food: THREE.ShaderMaterial; bond: THREE.LineBasicMaterial; signal: THREE.ShaderMaterial; body: THREE.ShaderMaterial };
+  theme: Theme = THEMES.light;
 
   constructor(canvas: HTMLCanvasElement, W: number, capacity: number, foodCapacity: number, pheroRes: number, patchRadius: number) {
     this.W = W;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x050811, 1);
     this.cam = new Camera2D(W);
 
     // particles: one interleaved buffer straight from the worker (x, y, size, r, g, b, signal, aggr)
@@ -66,22 +74,17 @@ export class View {
     this.pheroTex.wrapS = this.pheroTex.wrapT = THREE.RepeatWrapping;
     this.pheroTex.needsUpdate = true;
 
-    const add = THREE.AdditiveBlending;
-    const pheroMat = mat(S.pheroVert, S.pheroFrag, add, {
-      uTex: { value: this.pheroTex }, uTintA: { value: new THREE.Color(0.1, 0.75, 0.85) },
-      uTintB: { value: new THREE.Color(0.95, 0.35, 0.75) }, uAlpha: { value: 0.42 },
-    });
-    const patchMat = mat(S.dotVert, S.patchFrag, add, {
-      ...this.uniforms, uRadius: { value: patchRadius * 3.2 }, uMinPx: { value: 6 },
-      uColor: { value: new THREE.Color(0.25, 0.75, 0.4) }, uAlpha: { value: 0.22 },
-    });
-    const foodMat = mat(S.dotVert, S.foodFrag, add, {
-      ...this.uniforms, uRadius: { value: 0.0045 }, uMinPx: { value: 1.4 },
-      uColor: { value: new THREE.Color(0.55, 1.0, 0.45) }, uAlpha: { value: 0.75 },
-    });
-    const bondMat = new THREE.LineBasicMaterial({ color: 0xb8e4ff, transparent: true, opacity: 0.45, blending: add, depthTest: false, depthWrite: false });
-    const glowMat = mat(S.glowVert, S.glowFrag, add, { ...this.uniforms, uRadius: { value: 0.009 }, uGlow: { value: 1.0 } });
-    const bodyMat = mat(S.bodyVert, S.bodyFrag, THREE.NormalBlending, { ...this.uniforms, uRadius: { value: 0.009 } });
+    const nb = THREE.NormalBlending;
+    const u = this.uniforms;
+    this.mats = {
+      phero: mat(S.pheroVert, S.pheroFrag, nb, { uTex: { value: this.pheroTex }, uColor: { value: new THREE.Color() }, uAlpha: { value: 0.35 } }),
+      patch: mat(S.dotVert, S.patchFrag, nb, { ...u, uRadius: { value: patchRadius * 2.6 }, uMinPx: { value: 6 }, uColor: { value: new THREE.Color() }, uAlpha: { value: 0.06 } }),
+      food: mat(S.dotVert, S.foodFrag, nb, { ...u, uRadius: { value: 0.0032 }, uMinPx: { value: 1.2 }, uColor: { value: new THREE.Color() }, uAlpha: { value: 0.75 } }),
+      bond: new THREE.LineBasicMaterial({ color: 0x9ca3af, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false }),
+      signal: mat(S.signalVert, S.signalFrag, nb, { ...u, uRadius: { value: 0.0085 }, uInk: { value: new THREE.Color() } }),
+      body: mat(S.bodyVert, S.bodyFrag, nb, { ...u, uRadius: { value: 0.0085 }, uAttack: { value: new THREE.Color(0xd62728) }, uOutlineMix: { value: 0.35 } }),
+    };
+    const m = this.mats;
 
     this.trails = new Trails(this.renderer, this.pGeo, this.uniforms);
     const plane = new THREE.PlaneGeometry(W, W);
@@ -93,12 +96,12 @@ export class View {
       const put = (key: keyof View['groups'], o: Drawable, order: number) => {
         o.frustumCulled = false; o.renderOrder = order; g.add(o); this.groups[key].push(o);
       };
-      put('pheromone', new THREE.Mesh(plane, pheroMat), 0);
-      put('patches', new THREE.Points(this.patchGeo, patchMat), 1);
-      put('food', new THREE.Points(this.foodGeo, foodMat), 2);
-      put('bonds', new THREE.LineSegments(this.bondGeo, bondMat), 4);
-      put('glow', new THREE.Points(this.pGeo, glowMat), 5);
-      put('bodies', new THREE.Points(this.pGeo, bodyMat), 6);
+      put('pheromone', new THREE.Mesh(plane, m.phero), 0);
+      put('patches', new THREE.Points(this.patchGeo, m.patch), 1);
+      put('food', new THREE.Points(this.foodGeo, m.food), 2);
+      put('bonds', new THREE.LineSegments(this.bondGeo, m.bond), 4);
+      put('glow', new THREE.Points(this.pGeo, m.signal), 5);
+      put('bodies', new THREE.Points(this.pGeo, m.body), 6);
       this.tiles.push(g);
       this.scene.add(g);
     }
@@ -108,13 +111,30 @@ export class View {
     this.groups.trails.push(composite);
 
     this.selGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(2), 2));
-    this.selMat = mat(S.dotVert, S.ringFrag, add, {
-      ...this.uniforms, uRadius: { value: 0.03 }, uMinPx: { value: 14 },
-      uColor: { value: new THREE.Color(1.6, 1.6, 1.6) }, uProgress: { value: 0.7 }, uWidth: { value: 0.16 },
+    this.selMat = mat(S.dotVert, S.ringFrag, nb, {
+      ...u, uRadius: { value: 0.028 }, uMinPx: { value: 13 },
+      uColor: { value: new THREE.Color() }, uProgress: { value: 0.8 }, uWidth: { value: 0.09 }, uOpacity: { value: 0.9 },
     });
     const sel = new THREE.Points(this.selGeo, this.selMat);
     sel.frustumCulled = false; sel.renderOrder = 7; sel.visible = false;
     this.scene.add(sel);
+    this.setTheme(false);
+  }
+
+  /** Light (default) or dark map colours. */
+  setTheme(dark: boolean): void {
+    const T = dark ? THEMES.dark : THEMES.light;
+    this.theme = T;
+    this.renderer.setClearColor(T.bg, 1);
+    this.mats.phero.uniforms.uColor.value.set(T.phero);
+    this.mats.patch.uniforms.uColor.value.set(T.patch);
+    this.mats.patch.uniforms.uAlpha.value = T.patchAlpha;
+    this.mats.food.uniforms.uColor.value.set(T.food);
+    this.mats.bond.color.set(T.bond);
+    this.mats.signal.uniforms.uInk.value.set(T.ink);
+    this.mats.body.uniforms.uOutlineMix.value = T.outlineMix;
+    this.selMat.uniforms.uColor.value.set(T.ink);
+    this.trails.clear();
   }
 
   resize(w: number, h: number): void {
@@ -155,9 +175,9 @@ export class View {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x, y]), 2));
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(x, y, 0), 1);
-    const m = mat(S.dotVert, S.ringFrag, THREE.AdditiveBlending, {
+    const m = mat(S.dotVert, S.ringFrag, THREE.NormalBlending, {
       ...this.uniforms, uRadius: { value: radius }, uMinPx: { value: 10 },
-      uColor: { value: new THREE.Color(color) }, uProgress: { value: 0 }, uWidth: { value: 0.08 },
+      uColor: { value: new THREE.Color(color) }, uProgress: { value: 1 }, uWidth: { value: 0.04 }, uOpacity: { value: 0.9 },
     });
     const mesh = new THREE.Points(geo, m);
     mesh.frustumCulled = false; mesh.renderOrder = 8;
@@ -168,7 +188,6 @@ export class View {
   render(now: number): void {
     const c = this.cam;
     this.uniforms.uPxPerUnit.value = c.pxPerUnit * this.renderer.getPixelRatio();
-    this.selMat.uniforms.uProgress.value = 0.62 + 0.08 * Math.sin(now / 180);
     for (const key of Object.keys(this.groups) as (keyof View['groups'])[]) {
       const on = key === 'bodies' || this.layers[key as keyof Layers];
       for (const o of this.groups[key]) o.visible = on;
@@ -185,7 +204,7 @@ export class View {
     this.fx = this.fx.filter((e) => {
       const p = (now - e.t0) / e.dur;
       if (p >= 1) { this.scene.remove(e.mesh); e.mesh.geometry.dispose(); (e.mesh.material as THREE.Material).dispose(); return false; }
-      (e.mesh.material as THREE.ShaderMaterial).uniforms.uProgress.value = p;
+      (e.mesh.material as THREE.ShaderMaterial).uniforms.uOpacity.value = 0.9 * (1 - p);
       return true;
     });
     if (this.layers.trails) this.trails.accumulate(c.camera, visible);

@@ -3,81 +3,110 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="description" content="Primordial: thousands of particles with evolving neural-network brains, living, hunting, bonding and evolving in your browser." />
-  <title>Primordial</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='%2338d6e8'/%3E%3Ccircle cx='13' cy='13' r='4' fill='%23052a33'/%3E%3C/svg%3E" />
+  <meta name="description" content="Primordial: an evolutionary particle simulation. Thousands of particles with small neural networks forage, compete, cooperate and evolve in real time." />
+  <title>Primordial — evolutionary particle simulation</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='10' fill='%234e79a7' stroke='%23293d55' stroke-width='2'/%3E%3C/svg%3E" />
 </head>
 <body>
-  <canvas id="gl"></canvas>
-  <div class="vignette"></div>
+  <canvas id="gl" aria-label="Simulation map"></canvas>
 
-  <header class="brand">
-    <div class="logo"><span class="dot"></span>primordial</div>
-    <div class="tag">evolving neural life · live in your browser</div>
+  <header class="topbar">
+    <div class="title"><strong>Primordial</strong><span class="sub"> — evolutionary particle simulation</span></div>
+    <nav class="top-actions">
+      <a href="./explainer.html" class="link">What am I looking at?</a>
+      <button id="panelToggle" class="btn icon" aria-expanded="true" aria-controls="panel" title="Show or hide the control panel">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span class="lbl">Controls</span>
+      </button>
+    </nav>
   </header>
 
   <section id="hud" class="card hud" aria-live="polite"></section>
 
-  <button id="panelToggle" class="panel-toggle" aria-expanded="true" aria-controls="panel" title="Toggle panel">
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-  </button>
+  <section id="legend" class="card legend" aria-label="Legend">
+    <h3>Legend</h3>
+    <ul>
+      <li title="Each circle is one particle. Larger circles have a larger evolved body: more energy capacity and attack strength, but higher upkeep.">
+        <svg width="28" height="16" aria-hidden="true"><circle cx="6" cy="8" r="3.5" class="lg-fill"/><circle cx="19" cy="8" r="6" class="lg-fill"/></svg>
+        Particle (size = body size)</li>
+      <li title="A red outline means the particle is currently attacking: draining energy from touching, unrelated particles.">
+        <svg width="28" height="16" aria-hidden="true"><circle cx="14" cy="8" r="5.5" class="lg-fill attack"/></svg>
+        Red outline = attacking</li>
+      <li title="A bond is a spring linking two related particles; bonded particles share energy and move as one organism.">
+        <svg width="28" height="16" aria-hidden="true"><line x1="4" y1="8" x2="24" y2="8" class="lg-bond"/></svg>
+        Line = bond</li>
+      <li title="Food pellets. Eating one gives a fixed amount of energy. Most food grows inside slowly drifting fertile patches.">
+        <svg width="28" height="16" aria-hidden="true"><circle cx="9" cy="8" r="1.8" class="lg-food"/><circle cx="16" cy="6" r="1.8" class="lg-food"/><circle cx="20" cy="10" r="1.8" class="lg-food"/></svg>
+        Dot = food</li>
+      <li id="legendColour" title="What the fill colour of a particle encodes. Change it under Display → Colour by.">
+        <svg width="28" height="16" aria-hidden="true"><circle cx="7" cy="8" r="4.5" fill="#4e79a7"/><circle cx="16" cy="8" r="4.5" fill="#f28e2b"/><circle cx="25" cy="8" r="2.5" fill="#59a14f"/></svg>
+        <span>Colour = lineage (family)</span></li>
+    </ul>
+  </section>
 
   <aside id="panel" class="panel card">
     <section class="sec">
       <h2>Simulation</h2>
       <div class="row">
-        <button id="play" class="btn primary" title="Play / pause (Space)">Pause</button>
-        <button id="stepOnce" class="btn" title="Advance one step">Step</button>
-        <button id="fit" class="btn" title="Fit world to screen (F)">Fit</button>
+        <button id="play" class="btn primary" title="Start or pause the simulation (Space)">Pause</button>
+        <button id="stepOnce" class="btn" title="Pause and advance exactly one time step">Step</button>
+        <button id="fit" class="btn" title="Zoom out to show the whole world (F)">Fit view</button>
       </div>
-      <label class="slider"><span>Speed <em id="speedVal">4</em> max steps/frame</span>
+      <label class="slider" title="Upper limit on simulation steps computed per displayed frame. The simulation automatically does fewer if the device is slow.">
+        <span>Steps per frame (max) <em id="speedVal">4</em></span>
         <input id="speed" type="range" min="1" max="24" step="1" value="4" /></label>
       <div class="row">
-        <label class="field"><span>Seed</span><input id="seed" type="number" min="0" step="1" value="1" /></label>
-        <label class="field"><span>World</span>
+        <label class="field" title="Random seed. The same seed and world size reproduce the same run."><span>Seed</span><input id="seed" type="number" min="0" step="1" value="1" /></label>
+        <label class="field" title="World area relative to the reference Python simulation; population scales with it."><span>World size</span>
           <select id="scale">
-            <option value="4">Small · ~1.5k</option>
-            <option value="8">Medium · ~3k</option>
-            <option value="12" selected>Large · ~4.5k</option>
-            <option value="20">Huge · ~7k</option>
+            <option value="4">Small (~1,500)</option>
+            <option value="8">Medium (~3,000)</option>
+            <option value="12" selected>Large (~4,500)</option>
+            <option value="20">Very large (~7,000)</option>
           </select></label>
-        <button id="reset" class="btn danger" title="Restart from seed">Reset</button>
+        <button id="reset" class="btn" title="Start a new world with this seed and size">Reset</button>
       </div>
     </section>
 
     <section class="sec">
-      <h2>Population <span class="legend" id="chartLegend"></span></h2>
-      <canvas id="chart" class="chart"></canvas>
+      <h2>Population over time</h2>
+      <canvas id="chart" class="chart" aria-label="Population chart"></canvas>
+      <div class="chart-legend" id="chartLegend"></div>
     </section>
 
     <section class="sec">
-      <h2>View</h2>
+      <h2>Display</h2>
+      <div class="field-label">Colour by</div>
       <div class="seg" id="colorMode" role="radiogroup" aria-label="Colour by">
-        <button data-v="lineage" class="on">Lineage</button><button data-v="species">Species</button><button data-v="type">Type</button>
+        <button data-v="lineage" class="on" title="Inherited colour: relatives look alike, so families are visible">Lineage</button><button data-v="species" title="Behavioural cluster (k-means), recomputed every 250 steps">Species</button><button data-v="type" title="Physical type used by the attraction/repulsion forces">Physical type</button>
       </div>
-      <div class="chips" id="layers">
-        <button data-l="pheromone" class="on">Scent</button>
-        <button data-l="food" class="on">Food</button>
-        <button data-l="patches" class="on">Patches</button>
-        <button data-l="bonds" class="on">Bonds</button>
-        <button data-l="glow" class="on">Glow</button>
-        <button data-l="trails">Trails</button>
+      <div class="checks" id="layers">
+        <label title="Food pellets"><input type="checkbox" data-l="food" /> Food</label>
+        <label title="The drifting zones where most food grows"><input type="checkbox" data-l="patches" /> Fertile patches</label>
+        <label title="Spring links between related particles"><input type="checkbox" data-l="bonds" /> Bonds</label>
+        <label title="Chemical trail particles can deposit and smell (two channels, shown combined)"><input type="checkbox" data-l="pheromone" /> Pheromone field</label>
+        <label title="A ring whose opacity shows how strongly a particle is broadcasting its signal output"><input type="checkbox" data-l="glow" /> Signal display</label>
+        <label title="Short fading motion trails"><input type="checkbox" data-l="trails" /> Trails</label>
+      </div>
+      <div class="field-label">Theme</div>
+      <div class="seg" id="theme" role="radiogroup" aria-label="Theme">
+        <button data-v="light" class="on">Light</button><button data-v="dark">Dark</button>
       </div>
     </section>
 
     <section class="sec">
-      <h2>God tools</h2>
-      <div class="seg" id="tool" role="radiogroup" aria-label="Click tool">
-        <button data-v="inspect" class="on">Inspect</button><button data-v="food">Drop food</button><button data-v="meteor">Meteor</button>
+      <h2>Interventions</h2>
+      <div class="field-label">Clicking the map will</div>
+      <div class="seg" id="tool" role="radiogroup" aria-label="Click action">
+        <button data-v="inspect" class="on" title="Select a particle to see its body, energy and neural network">Inspect</button><button data-v="food" title="Scatter 40 food pellets around the click">Add food</button><button data-v="meteor" title="Remove every particle within a radius of 0.15 world units; the area fills with food">Remove area</button>
       </div>
       <div id="params"></div>
     </section>
 
-
     <footer class="about">
-      Each particle runs its own recurrent neural network with lifetime Hebbian learning.
-      No fitness function: whoever eats, survives and reproduces passes on mutated genes.
-      <div class="keys">Space pause · ←/→ speed · 1/2/3 colour · T trails · P scent · F fit · drag to pan · wheel / pinch to zoom</div>
+      Each particle is controlled by its own small recurrent neural network that also learns during its lifetime.
+      There is no fitness function: particles that gather enough energy reproduce, passing on mutated copies of their genes.
+      <div class="keys">Keyboard: Space pause · ←/→ speed · 1/2/3 colour · F fit · Esc close inspector. Drag to pan, scroll or pinch to zoom.</div>
     </footer>
   </aside>
 
@@ -85,11 +114,12 @@
     <div class="ins-head">
       <span class="swatch" id="insSwatch"></span>
       <div><div class="ins-title" id="insTitle">Particle</div><div class="ins-sub" id="insSub"></div></div>
-      <button id="insClose" class="x" title="Close">×</button>
+      <button id="insClose" class="btn icon x" title="Close (Esc)">×</button>
     </div>
     <div id="insBody" class="ins-grid"></div>
+    <div class="field-label">Neural network (live)</div>
     <canvas id="brain" class="brain"></canvas>
-    <div class="brain-cap">brain: inputs → hidden → outputs · line colour = weight sign, width = magnitude (incl. learned)</div>
+    <div class="brain-cap">Inputs (left) → hidden units → outputs (right). Node shade = current activation; blue lines are positive weights, red negative; width = strength, including learned changes. Strongest connections only.</div>
   </section>
 
   <div id="toast" class="toast" role="status"></div>

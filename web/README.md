@@ -139,3 +139,22 @@ to about 4–4.6k as foraging evolves, well above the 960 abiogenesis floor.
 - Ideas for more speed: a WASM/SIMD brain kernel, and skipping plasticity decay for idle
   synapses. Splitting particles across several workers would need SharedArrayBuffer, which
   needs cross-origin isolation headers that a single hosted file can't rely on.
+
+## Display design
+
+The page is styled as an analysis tool, not a game:
+
+- **Themes:** light by default, with a dark theme under Display → Theme. You can also force it
+  with `?theme=dark`; the choice is remembered in localStorage when available.
+- **Particles:** flat filled circles with a thin darker outline; the outline turns red while
+  the particle is attacking.
+- **Colour:** muted palettes. Lineage mode maps the hue of the genome colour to mid
+  saturation and lightness. Species mode uses Tableau 10 and physical type uses ColorBrewer
+  Dark2.
+- **Layers:** all are alpha-blended, with no additive glow. Bonds are thin grey lines, food is
+  small grey-green dots and fertile patches are faint discs.
+- **Off by default:** the pheromone field (a single-hue heatmap of both channels), the signal
+  display (a ring whose opacity follows |signal|) and trails.
+- **Explanations:** every statistic and control has a plain-language tooltip. A persistent
+  legend explains the marks, and the header links to `./explainer.html`, which is a separate
+  page not included in this build.

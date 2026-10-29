@@ -91,7 +91,7 @@ function frame(steps: number, budgetMs: number, mode: ColorMode, wantPh: boolean
     else {
       const pal = mode === 'type' ? TYPE_PALETTE : SPECIES_PALETTE;
       const id = mode === 'type' ? g.ptype[s] : w.speciesId[s];
-      const c = id >= 0 ? pal[id % pal.length] : [0.55, 0.58, 0.65];
+      const c = id >= 0 ? pal[id % pal.length] : [0.62, 0.62, 0.6];
       rgb[0] = c[0]; rgb[1] = c[1]; rgb[2] = c[2];
     }
     particles[o + 3] = rgb[0]; particles[o + 4] = rgb[1]; particles[o + 5] = rgb[2];
@@ -146,7 +146,7 @@ function frame(steps: number, budgetMs: number, mode: ColorMode, wantPh: boolean
 function inspectSelected(w: World): Inspect | null {
   if (selected < 0) return null;
   const s = selected;
-  if (!w.alive[s] || w.uid[s] !== selectedUid) { selected = -1; pendingEvent = 'The inspected particle died.'; return null; }
+  if (!w.alive[s] || w.uid[s] !== selectedUid) { selected = -1; pendingEvent = 'The inspected particle has died.'; return null; }
   const cfg = w.cfg, g = w.genome, H = cfg.hidden, mb = cfg.maxBonds;
   const size = sizeOf(cfg, g.body[s * 3]);
   const w2: number[] = [];
@@ -161,7 +161,7 @@ function inspectSelected(w: World): Inspect | null {
     size, speed: speedOf(cfg, g.body[s * 3 + 1]), sense: senseOf(cfg, g.body[s * 3 + 2]),
     ptype: g.ptype[s],
     color: [g.color[s * 3], g.color[s * 3 + 1], g.color[s * 3 + 2]],
-    species: sid >= 0 ? (w.species.names[sid] ?? '?') : 'unclassified',
+    species: sid >= 0 ? (w.species.names[sid] ?? '?') : 'not yet classified',
     bonds, aggression: w.aggression[s], signal: w.signal[s], logEta: g.logEta[s],
     sigma: Array.from(g.sigma.subarray(s * N_GROUPS, (s + 1) * N_GROUPS)),
     foodGained: w.foodGained[s], preyGained: w.preyGained[s],
@@ -210,7 +210,7 @@ export function handle(m: ToWorker): void {
     case 'tool':
       if (!world) break;
       if (m.tool === 'food') world.dropFood(m.x, m.y, 40, 0.04);
-      else pendingEvent = `Meteor strike: ${world.meteor(m.x, m.y, 0.15)} particles lost.`;
+      else pendingEvent = `Removed ${world.meteor(m.x, m.y, 0.15)} particles; the area was refilled with food.`;
       break;
     case 'param':
       if (world) (world.cfg as unknown as Record<LiveParam, number>)[m.key] = m.value;

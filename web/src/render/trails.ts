@@ -43,8 +43,8 @@ export class Trails {
     }
     this.compMat = new THREE.ShaderMaterial({
       vertexShader: S.screenVert, fragmentShader: S.compositeFrag,
-      uniforms: { uTex: { value: this.a.texture }, uAlpha: { value: 0.85 } },
-      blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false,
+      uniforms: { uTex: { value: this.a.texture }, uAlpha: { value: 0.5 } },
+      blending: THREE.NormalBlending, transparent: true, depthTest: false, depthWrite: false,
     });
   }
 

@@ -1,6 +1,9 @@
 /** Colour helpers shared by the worker (per-particle colours) and the UI (legends). */
 
-/** Lineage colour: the genome colour with its hue kept but saturation and value lifted, so lineages read vividly. */
+/**
+ * Lineage colour: the hue of the inherited genome colour at a muted, mid saturation and
+ * mid lightness, so families stay distinguishable and every mark reads on a white background.
+ */
 export function lineageColor(r: number, g: number, b: number, out: [number, number, number]): void {
   const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
   let h = 0;
@@ -12,9 +15,14 @@ export function lineageColor(r: number, g: number, b: number, out: [number, numb
     if (h < 0) h += 1;
   }
   const s0 = max > 0 ? d / max : 0;
-  const s = 0.42 + 0.4 * Math.min(1, s0 * 1.5);
-  const v = 0.78 + 0.2 * max;
-  hsv(h, s, v, out);
+  hsl(h, 0.3 + 0.16 * Math.min(1, s0 * 1.4), 0.56 + 0.06 * (max - 0.5), out);
+}
+
+export function hsl(h: number, s: number, l: number, out: [number, number, number]): void {
+  const k = (n: number) => (n + h * 12) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  out[0] = f(0); out[1] = f(8); out[2] = f(4);
 }
 
 export function hsv(h: number, s: number, v: number, out: [number, number, number]): void {
@@ -29,15 +37,12 @@ export function hsv(h: number, s: number, v: number, out: [number, number, numbe
   }
 }
 
-/** Species colours (by cluster index). */
-export const SPECIES_PALETTE: number[][] = [
-  [0.36, 0.78, 1.0], [1.0, 0.62, 0.26], [0.55, 0.95, 0.5], [0.98, 0.42, 0.72], [0.82, 0.7, 1.0],
-  [1.0, 0.9, 0.4], [0.4, 1.0, 0.85], [1.0, 0.5, 0.45],
-];
+const hex = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
 
-/** Physical type colours (particle-life types). */
-export const TYPE_PALETTE: number[][] = [
-  [1.0, 0.45, 0.4], [0.4, 0.85, 1.0], [0.75, 1.0, 0.45], [0.95, 0.6, 1.0], [1.0, 0.85, 0.35], [0.5, 1.0, 0.8],
-];
+/** Species colours (by cluster index): Tableau 10. */
+export const SPECIES_PALETTE: number[][] = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948', '#9c755f', '#ff9da7', '#bab0ac'].map(hex);
+
+/** Physical type colours (particle-life types): ColorBrewer Dark2, slightly softened. */
+export const TYPE_PALETTE: number[][] = ['#1b9e77', '#d95f02', '#7570b3', '#e7298a', '#66a61e', '#e6ab02'].map(hex);
 
 export const css = (c: number[]) => `rgb(${Math.round(c[0] * 255)}, ${Math.round(c[1] * 255)}, ${Math.round(c[2] * 255)})`;
