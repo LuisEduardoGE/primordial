@@ -1,0 +1,15 @@
+{
+  "name": "mutation",
+  "description": "Old mutation (fixed step size, uniform per-layer rates, no neuron resets) vs the new default (self-adaptive sigma, per-layer rates, neuron resets). Same world for both. The tournament arena freezes mutation so it scores the evolved genomes themselves.",
+  "steps": 6000,
+  "every": 250,
+  "seeds": [1, 2, 3, 4, 5, 6, 7, 8],
+  "base": {"capacity": 1000},
+  "variants": {
+    "old": {"sigma_tau": 0, "neuron_reset_prob": 0, "perception_rate_mult": 1, "behaviour_rate_mult": 1,
+            "attraction_rate_mult": 1, "traits_rate_mult": 1},
+    "new": {}
+  },
+  "tournament": {"trials": 4, "steps": 2000, "each": 100,
+                 "overrides": {"mutation_rate": 0, "neuron_reset_prob": 0, "sigma_tau": 0}}
+}
