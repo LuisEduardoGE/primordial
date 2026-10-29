@@ -576,16 +576,17 @@ class World:
         counts = torch.bincount(ids, minlength=len(self.species.names)).tolist()
         return {name: c for name, c in zip(self.species.names, counts) if c > 0}
 
-    def lineage_count(self, bins: int = 4) -> int:
-        """Rough family count: occupied cells when colour space is cut into bins^3 cubes,
-        counting only cells holding at least 5% of the population."""
+    def lineage_count(self, bins: int = 4) -> float:
+        """Effective number of families: exp(Shannon entropy) of the population over colour
+        cells (bins^3 cubes). Equals k for k equal-sized families; robust at any population."""
         c = self.genome.color[self.alive]
         if len(c) == 0:
-            return 0
+            return 0.0
         cell = (c * bins).long().clamp(max=bins - 1)
         keys = cell[:, 0] * bins * bins + cell[:, 1] * bins + cell[:, 2]
-        counts = torch.bincount(keys, minlength=bins**3)
-        return int((counts >= max(1, 0.05 * len(c))).sum())
+        p = torch.bincount(keys, minlength=bins**3).float() / len(c)
+        p = p[p > 0]
+        return round(float(torch.exp(-(p * p.log()).sum())), 1)
 
     def stats(self) -> dict:
         a = self.alive
