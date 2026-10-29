@@ -6,9 +6,11 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 import pygame
 import pytest
+import torch
 
 from primordial import Config, World
-from primordial.render import COLOR_MODES, Renderer, TreePanel, draw_brain
+from primordial import render
+from primordial.render import COLOR_MODES, Renderer, TreePanel, draw_brain, lineage_rgb
 from primordial.timelapse import add_subparser, run_timelapse
 from primordial.viewer import SLIDERS, TOOLS, Viewer
 
@@ -44,14 +46,30 @@ def test_renderer_every_mode_and_overlay(world):
         r.color_mode = mode
         for trails in (True, False):
             r.trails = trails
-            r.show_pheromone = r.show_bonds = r.show_patches = not trails
+            r.show_pheromone = r.show_signal = r.show_bonds = r.show_patches = not trails
             r.draw(surf, world, selected=int(world.alive.nonzero()[0, 0]))
     assert surf.get_bounding_rect().w > 0
-    # Pheromone overlay actually lights the deposited corner.
-    r.trails, r.show_pheromone = False, True
-    r.draw(surf, world)
-    lit = sum(surf.get_at((int((15 / 96) * 240), int((15 / 96) * 240)))[:3])
-    assert lit > 30
+    # Pheromone overlay tints the deposited corner away from the plain canvas, in both themes.
+    r.trails = False
+    probe = (int((15 / 96) * 240), int((15 / 96) * 240))
+    try:
+        for name in ("light", "dark"):
+            canvas = render.set_theme(name).canvas
+            r.show_pheromone = True
+            r.draw(surf, world)
+            tinted = tuple(surf.get_at(probe))[:3]
+            assert sum(abs(a - b) for a, b in zip(tinted, canvas)) > 20
+    finally:
+        render.set_theme("light")
+
+
+def test_overlays_off_by_default_and_colours_muted(world):
+    r = Renderer(240, world.cfg.world_size)
+    assert not (r.trails or r.show_pheromone or r.show_signal)
+    rgb = lineage_rgb(torch.rand(500, 3, generator=torch.Generator().manual_seed(0))).float() / 255
+    mx, mn = rgb.max(1).values, rgb.min(1).values
+    assert mx.max() <= 0.76 and mx.min() >= 0.54          # value pinned to ~0.55-0.75
+    assert ((mx - mn) / mx).max() <= 0.61                  # saturation never neon
 
 
 def test_viewer_panels_and_keys(world):
@@ -66,12 +84,15 @@ def test_viewer_panels_and_keys(world):
     assert v.tree.where and v.selected_uid in v.tree.where
     key(v, pygame.K_g)
     v.draw(screen)                                  # sliders
-    for k in (pygame.K_c, pygame.K_c, pygame.K_t, pygame.K_o, pygame.K_b, pygame.K_p, pygame.K_h,
-              pygame.K_SPACE, pygame.K_UP, pygame.K_DOWN):
+    for k in (pygame.K_c, pygame.K_c, pygame.K_t, pygame.K_o, pygame.K_v, pygame.K_b, pygame.K_p, pygame.K_d,
+              pygame.K_h, pygame.K_SPACE, pygame.K_UP, pygame.K_DOWN):
         key(v, k)
         v.update()
         v.draw(screen)
     assert v.paused and v.renderer.color_mode == COLOR_MODES[2]
+    assert v.renderer.show_signal and render.theme().name == "dark"
+    key(v, pygame.K_d)
+    assert render.theme().name == "light"
 
 
 def test_brain_and_tree_direct(world):
@@ -93,7 +114,7 @@ def test_god_tools(world):
     i = int(world.alive.nonzero()[0, 0])
     x, y = world.pos[i].tolist()
     key(v, pygame.K_3)
-    assert v.tool == "meteor"
+    assert v.tool == "remove area"
     v.use_tool(x, y)
     assert not world.alive[i] and v.effects
 

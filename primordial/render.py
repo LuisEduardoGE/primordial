@@ -1,108 +1,222 @@
 """Drawing a World onto any pygame Surface: shared by the live viewer and headless timelapses.
 
-`Renderer` draws the world view (particles, trails, food, patches, bonds, pheromones).
-The panel helpers (`draw_brain`, `TreePanel`, `draw_legend`, `Graph`) draw the side panel
-pieces into a given rect, so the viewer only decides layout.
+`Renderer` draws the world view (particles, food, patches, bonds, optional overlays).
+The panel helpers (`Graph`, `draw_species`, `draw_legend`, `draw_inspector`, `TreePanel`)
+draw side-panel sections into a given rect, so the viewer only decides layout.
+Styling follows a sober light theme (with a dark variant) meant to read like an analysis tool.
 """
 
 import math
+import os
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import pygame
+import pygame.gfxdraw
 import torch
 
 from .genome import N_INPUTS, OUTPUT_NAMES, SENSE_NAMES
 
-BG = (9, 10, 16)
-PANEL = (17, 19, 28)
-PANEL_EDGE = (40, 44, 60)
-TEXT = (214, 218, 228)
-DIM = (120, 126, 145)
-ACCENT = (255, 206, 110)
-POS_EDGE = (255, 150, 70)    # positive weight / activation
-NEG_EDGE = (80, 160, 255)    # negative weight / activation
-FOOD = (170, 200, 90)
-PATCH = (70, 90, 40)
-AGGRO = (255, 60, 60)
+RGB = tuple[int, int, int]
+
+
+def hex_rgb(h: str) -> RGB:
+    return tuple(int(h[k:k + 2], 16) for k in (1, 3, 5))
+
+
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    canvas: RGB      # world view background
+    panel: RGB       # side panel and cards
+    border: RGB      # 1px rules and card borders
+    text: RGB
+    muted: RGB
+    accent: RGB      # also the colour of positive weights
+    negative: RGB    # attacking outline, negative weights
+    grid: RGB        # chart gridlines, bar tracks
+    bond: RGB
+    food: RGB
+    patch: RGB
+    heat: RGB        # pheromone field hue
+
+
+LIGHT = Theme("light", hex_rgb("#fafaf9"), hex_rgb("#ffffff"), hex_rgb("#e2e2de"), hex_rgb("#1f2421"),
+              hex_rgb("#5f6763"), hex_rgb("#2f5d8a"), hex_rgb("#c0392b"), hex_rgb("#efefec"),
+              hex_rgb("#9aa09c"), hex_rgb("#7d9a5a"), hex_rgb("#c9ccc8"), hex_rgb("#2f5d8a"))
+DARK = Theme("dark", hex_rgb("#16191b"), hex_rgb("#1e2226"), hex_rgb("#2c3237"), hex_rgb("#e6e8e6"),
+             hex_rgb("#9aa29e"), hex_rgb("#6f9cc8"), hex_rgb("#d9604f"), hex_rgb("#262b30"),
+             hex_rgb("#5d6561"), hex_rgb("#7d9a5a"), hex_rgb("#3a4146"), hex_rgb("#5b8fc4"))
+THEMES = {"light": LIGHT, "dark": DARK}
+_theme = LIGHT
+
+
+def theme() -> Theme:
+    return _theme
+
+
+def set_theme(name: str) -> Theme:
+    global _theme
+    _theme = THEMES[name]
+    return _theme
+
 
 COLOR_MODES = ("lineage", "type", "species")
-TYPE_PALETTE = [(235, 85, 85), (80, 170, 245), (245, 205, 70), (175, 105, 235),
-                (90, 225, 145), (245, 135, 45), (225, 225, 225), (125, 125, 255)]
-SPECIES_PALETTE = [(255, 99, 132), (54, 200, 235), (255, 205, 86), (120, 220, 120), (190, 130, 255),
-                   (255, 150, 60), (90, 230, 200), (240, 240, 240), (230, 110, 200), (160, 170, 90)]
-UNCLASSIFIED = (110, 110, 120)
-PHEROMONE_TINTS = ((0.15, 0.85, 0.75), (0.85, 0.25, 0.75))   # channel A teal, channel B magenta
+COLOR_MODE_LABELS = {"lineage": "lineage", "type": "physical type", "species": "behavioural species"}
+TABLEAU10 = [hex_rgb(h) for h in ("#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
+                                  "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac")]
+DARK2 = [hex_rgb(h) for h in ("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
+                              "#e6ab02", "#a6761d", "#666666")]
+UNCLASSIFIED = (160, 164, 161)
 
 
 def lineage_rgb(color: torch.Tensor) -> torch.Tensor:
-    """Genome colour (n, 3) in [0, 1] -> vivid display colour (stretch away from grey so lineages pop)."""
-    mean = color.mean(1, keepdim=True)
-    vivid = (mean + (color - mean) * 2.2).clamp(0, 1)
-    return (vivid * 200 + 55).int()
+    """Genome colour (n, 3) in [0, 1] -> muted display colour (n, 3) int.
+
+    Keeps the hue (so lineages stay distinguishable) but pins saturation to 0.45-0.6 and value
+    to 0.55-0.75, which reads on both a white and a dark canvas without going neon.
+    """
+    r, g, b = color.unbind(1)
+    mx, mn = color.max(1).values, color.min(1).values
+    d = mx - mn
+    safe = d.clamp_min(1e-6)
+    h = torch.where(mx == r, ((g - b) / safe) % 6, torch.where(mx == g, (b - r) / safe + 2, (r - g) / safe + 4))
+    h = torch.where(d > 1e-6, h, torch.zeros_like(h)) / 6
+    # Near-grey genomes have no meaningful hue: fade their saturation out rather than invent one.
+    s = (0.45 + 0.15 * (d / mx.clamp_min(1e-6))) * (d / 0.12).clamp(max=1)
+    v = 0.55 + 0.2 * mx
+    k = (torch.stack([torch.full_like(h, 5.0), torch.full_like(h, 3.0), torch.ones_like(h)], 1) + h[:, None] * 6) % 6
+    rgb = v[:, None] - (v * s)[:, None] * torch.clamp(torch.minimum(k, 4 - k), 0, 1)
+    return (rgb * 255).round().int()
 
 
-def vivid(color) -> tuple[int, int, int]:
+def muted(color) -> RGB:
     """One genome colour tuple -> display colour."""
     return tuple(lineage_rgb(torch.tensor([color], dtype=torch.float32))[0].tolist())
 
 
-def species_rgb(sid: int) -> tuple[int, int, int]:
-    return SPECIES_PALETTE[sid % len(SPECIES_PALETTE)] if sid >= 0 else UNCLASSIFIED
+def species_rgb(sid: int) -> RGB:
+    return TABLEAU10[sid % len(TABLEAU10)] if sid >= 0 else UNCLASSIFIED
 
 
-def get_font(size: int, bold: bool = False) -> pygame.font.Font:
-    if not pygame.font.get_init():
-        pygame.font.init()
-    key = (size, bold)
-    if key not in _FONTS:
-        _FONTS[key] = pygame.font.SysFont("consolas,dejavusansmono,couriernew,monospace", size, bold=bold)
-    return _FONTS[key]
+def type_rgb(t: int) -> RGB:
+    return DARK2[t % len(DARK2)]
 
 
+def shade(col, k: float) -> RGB:
+    """Scale brightness: k < 1 darker (outlines), k > 1 lighter."""
+    return tuple(max(0, min(255, int(c * k))) for c in col)
+
+
+def mix(a, b, t: float) -> RGB:
+    """Linear blend from colour a (t=0) to b (t=1)."""
+    return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
+
+
+# ------------------------------------------------------------------------ type
+
+_FONT_FILES = {
+    "regular": ("segoeui.ttf", "arial.ttf"),
+    "bold": ("seguisb.ttf", "segoeuib.ttf", "arialbd.ttf"),
+    "mono": ("consola.ttf",),
+}
 _FONTS: dict = {}
 
 
-def text(surface, s: str, pos, color=TEXT, size: int = 13, bold: bool = False, anchor: str = "topleft") -> pygame.Rect:
-    img = get_font(size, bold).render(s, True, color)
+def _font_path(kind: str) -> str | None:
+    # SysFont("segoeui") resolves to Segoe UI *Light* on Windows, so prefer exact files.
+    fonts_dir = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
+    for name in _FONT_FILES[kind]:
+        path = os.path.join(fonts_dir, name)
+        if os.path.exists(path):
+            return path
+    fallback = {"regular": "segoeui,arial,dejavusans", "bold": "segoeui,arial,dejavusans",
+                "mono": "consolas,dejavusansmono,couriernew"}[kind]
+    return pygame.font.match_font(fallback, bold=kind == "bold")
+
+
+def get_font(size: int, bold: bool = False, mono: bool = False) -> pygame.font.Font:
+    if not pygame.font.get_init():
+        pygame.font.init()
+    kind = "mono" if mono else "bold" if bold else "regular"
+    key = (size, kind)
+    if key not in _FONTS:
+        _FONTS[key] = pygame.font.Font(_font_path(kind), size)
+    return _FONTS[key]
+
+
+def text(surface, s: str, pos, color=None, size: int = 12, bold: bool = False, anchor: str = "topleft",
+         mono: bool = False) -> pygame.Rect:
+    img = get_font(size, bold, mono).render(s, True, color or theme().text)
     rect = img.get_rect(**{anchor: pos})
     surface.blit(img, rect)
     return rect
 
 
-def panel(surface, rect: pygame.Rect, alpha: int = 225, title: str | None = None) -> None:
-    """Rounded translucent card with an optional small caps title."""
+def card(surface, rect: pygame.Rect, alpha: int = 255) -> None:
+    """Flat panel with a 1px border (used for overlays on the world view)."""
     if rect.w <= 0 or rect.h <= 0:
         return
-    card = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(card, (*PANEL, alpha), card.get_rect(), border_radius=8)
-    pygame.draw.rect(card, (*PANEL_EDGE, 255), card.get_rect(), 1, border_radius=8)
-    surface.blit(card, rect.topleft)
-    if title:
-        text(surface, title.upper(), (rect.x + 10, rect.y + 7), DIM, 11, bold=True)
+    th = theme()
+    if alpha >= 255:
+        pygame.draw.rect(surface, th.panel, rect, border_radius=4)
+    else:
+        s = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(s, (*th.panel, alpha), s.get_rect(), border_radius=4)
+        surface.blit(s, rect.topleft)
+    pygame.draw.rect(surface, th.border, rect, 1, border_radius=4)
 
 
-def _shade(col, k: float) -> tuple[int, int, int]:
-    return tuple(max(0, min(255, int(c * k))) for c in col)
+def section(surface, rect: pygame.Rect, title: str, note: str = "") -> int:
+    """Section heading (sentence case, semibold) with an optional muted note; returns the y below it."""
+    text(surface, title, (rect.x, rect.y), theme().text, 13, bold=True)
+    if note:
+        text(surface, note, (rect.right, rect.y + 2), theme().muted, 11, anchor="topright")
+    return rect.y + 22
+
+
+def rule(surface, x0: int, x1: int, y: int) -> None:
+    pygame.draw.line(surface, theme().border, (x0, y), (x1, y))
+
+
+def nice_ticks(lo: float, hi: float, n: int = 4) -> list[float]:
+    """Round tick values (1, 2, 2.5, 5 x 10^k) from at or below `lo` to the first at or above `hi`."""
+    span = max(hi - lo, 1e-9)
+    raw = span / n
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    start = math.floor(lo / step) * step
+    ticks = [round(start, 10)]
+    while ticks[-1] < hi - step * 1e-6:
+        ticks.append(round(ticks[-1] + step, 10))
+    return ticks
+
+
+def fmt_tick(v: float) -> str:
+    if abs(v) >= 1000:
+        return f"{v / 1000:g}k"
+    return f"{v:g}"
+
+
+# ------------------------------------------------------------------ world view
 
 
 class Renderer:
-    """Draws the world view. Owns the trail layer, glow sprites and pheromone overlay."""
+    """Draws the world view: flat particles, food, patches, bonds; optional trails/field/signal overlays."""
 
     def __init__(self, px: int, world_size: float):
         self.px = px
         self.scale = px / world_size
         self.ui = px / 820          # sizes were tuned at 820 px; scale them for other sizes
         self.color_mode = "lineage"
-        self.trails = True
-        self.show_pheromone = True
+        self.trails = False
+        self.show_pheromone = False
+        self.show_signal = False
         self.show_patches = True
         self.show_bonds = True
-        self.trail = pygame.Surface((px, px))
-        self.trail.fill(BG)
-        self.fade = pygame.Surface((px, px), pygame.SRCALPHA)
-        self.fade.fill((*BG, 38))
-        self._glow: dict = {}
+        self.trail: pygame.Surface | None = None
+        self._trail_theme = ""
 
     def cycle_colors(self) -> str:
         self.color_mode = COLOR_MODES[(COLOR_MODES.index(self.color_mode) + 1) % len(COLOR_MODES)]
@@ -117,77 +231,94 @@ class Renderer:
     def colors(self, world, idx: torch.Tensor) -> list:
         """Display colour per particle in `idx`, for the current colour mode."""
         if self.color_mode == "type":
-            t = world.genome.ptype[idx].tolist()
-            return [TYPE_PALETTE[k % len(TYPE_PALETTE)] for k in t]
+            return [type_rgb(t) for t in world.genome.ptype[idx].tolist()]
         if self.color_mode == "species":
             return [species_rgb(s) for s in world.species_id[idx].tolist()]
         return [tuple(c) for c in lineage_rgb(world.genome.color[idx]).tolist()]
 
-    # ------------------------------------------------------------------ world view
+    def radii(self, world, idx: torch.Tensor) -> torch.Tensor:
+        """Screen radius from body size, so the legend can reuse the same mapping."""
+        return (1.5 + 2.6 * world.body(idx)[0]).mul(self.ui).clamp_min(1.5)
 
     def draw(self, surface: pygame.Surface, world, selected: int | None = None, offset=(0, 0)) -> None:
         """Draw one frame of the world view onto `surface` at `offset` (px x px)."""
-        s, ui = self.scale, self.ui
+        th, s, ui = theme(), self.scale, self.ui
         idx = world.alive.nonzero().squeeze(1)
         # One tensor -> list conversion per quantity per frame; the Python loops below are the cost.
-        pos = (world.pos[idx] * s).tolist()
-        radius = (1.6 + 2.8 * world.body(idx)[0]).mul(ui).clamp_min(1.0).tolist()
+        pos = (world.pos[idx] * s).round().int().tolist()
+        radius = self.radii(world, idx).round().int().tolist()
         aggressive = (world.aggression[idx] > 0.3).tolist()
-        signal = world.signal[idx].abs().tolist()
         cols = self.colors(world, idx)
 
-        # Trails: only faint particle cores go on the persistent layer, so halos and rings stay crisp.
-        if self.trails:
-            self.trail.blit(self.fade, (0, 0))
-            for (x, y), r, c in zip(pos, radius, cols):
-                pygame.draw.circle(self.trail, _shade(c, 0.45), (x, y), max(1.0, r * 0.6))
-            frame = self.trail.copy()
-        else:
-            frame = pygame.Surface((self.px, self.px))
-            frame.fill(BG)
-
-        if self.show_pheromone:
-            frame.blit(self._pheromone_surface(world), (0, 0), special_flags=pygame.BLEND_ADD)
+        frame = self._base(world, pos, radius, cols)
         if self.show_patches:
-            pr = world.cfg.patch_radius * s * 2
-            for x, y in (world.patch_pos * s).tolist():
-                pygame.draw.circle(frame, PATCH, (x, y), pr, max(1, int(ui)))
-        fr = max(1, round(1.3 * ui))
+            self._draw_patches(frame, world)
+        fr = max(1, round(1.4 * ui))
         for x, y in (world.food[world.food_alive] * s).tolist():
-            pygame.draw.circle(frame, FOOD, (x, y), fr)
-
+            pygame.draw.circle(frame, th.food, (x, y), fr)
         if self.show_bonds:
-            self._draw_bonds(frame, world, idx, cols)
+            self._draw_bonds(frame, world, idx)
+        if self.show_signal:
+            self._draw_signal(frame, world, idx, pos, radius, cols)
 
-        # Signalling particles glow; additive blending lets dense chatter bloom.
-        for (x, y), r, c, sig in zip(pos, radius, cols, signal):
-            if sig > 0.12:
-                g = self._glow_sprite(c, sig, r)
-                frame.blit(g, (x - g.get_width() / 2, y - g.get_height() / 2), special_flags=pygame.BLEND_ADD)
-        ring_w = max(1, int(ui))
+        fill_circle, ring = pygame.gfxdraw.filled_circle, pygame.gfxdraw.aacircle
+        red = th.negative
         for (x, y), r, c, agg in zip(pos, radius, cols, aggressive):
-            pygame.draw.circle(frame, c, (x, y), r)
+            fill_circle(frame, x, y, r, c)
             if agg:
-                pygame.draw.circle(frame, AGGRO, (x, y), r + 2 * ui, ring_w)
+                ring(frame, x, y, r, red)
+                ring(frame, x, y, r + 1, red)
+            else:
+                ring(frame, x, y, r, shade(c, 0.65))
 
         if selected is not None and bool(world.alive[selected]):
-            x, y = (world.pos[selected] * s).tolist()
-            pygame.draw.circle(frame, (255, 255, 255), (x, y), 12 * ui, 1)
-            pygame.draw.circle(frame, (90, 95, 110), (x, y), world.cfg.sense_radius * float(world.body([selected])[2][0]) * s, 1)
-            self._draw_selected_bonds(frame, world, selected)
+            self._draw_selected(frame, world, selected)
         surface.blit(frame, offset)
 
-    def _draw_bonds(self, frame, world, idx, cols) -> None:
+    def _base(self, world, pos, radius, cols) -> pygame.Surface:
+        """Canvas (or the fading trail layer) plus the optional pheromone heatmap."""
+        th = theme()
+        if self.trails:
+            if self.trail is None or self._trail_theme != th.name:
+                self.trail = pygame.Surface((self.px, self.px))
+                self.trail.fill(th.canvas)
+                self._trail_theme = th.name
+            fade = pygame.Surface((self.px, self.px), pygame.SRCALPHA)
+            fade.fill((*th.canvas, 30))
+            self.trail.blit(fade, (0, 0))
+            for (x, y), r, c in zip(pos, radius, cols):
+                pygame.draw.circle(self.trail, mix(th.canvas, c, 0.35), (x, y), max(1, r - 1))
+            frame = self.trail.copy()
+        else:
+            self.trail = None
+            frame = pygame.Surface((self.px, self.px))
+            frame.fill(th.canvas)
+        if self.show_pheromone:
+            heat, flags = self._pheromone_surface(world)
+            frame.blit(heat, (0, 0), special_flags=flags)
+        return frame
+
+    def _draw_patches(self, frame, world) -> None:
+        """Fertile patches as thin dashed rings."""
+        pr = world.cfg.patch_radius * self.scale * 2
+        col = theme().patch
+        n = 36
+        for cx, cy in (world.patch_pos * self.scale).tolist():
+            pts = [(cx + pr * math.cos(2 * math.pi * k / n), cy + pr * math.sin(2 * math.pi * k / n))
+                   for k in range(n + 1)]
+            for k in range(0, n, 2):
+                pygame.draw.aaline(frame, col, pts[k], pts[k + 1])
+
+    def _draw_bonds(self, frame, world, idx) -> None:
         bonds = world.bonds[idx]
         has = (bonds >= 0).any(1)
         if not bool(has.any()):
             return
         slots = idx[has].tolist()
         rows = bonds[has].tolist()
-        col_of = dict(zip(idx.tolist(), cols))
         pos = world.pos.mul(self.scale).tolist()
         half = self.px / 2
-        w = max(1, round(1.5 * self.ui))
+        col = theme().bond
         for a, partners in zip(slots, rows):
             ax, ay = pos[a]
             for b in partners:
@@ -196,116 +327,195 @@ class Renderer:
                 bx, by = pos[b]
                 if abs(bx - ax) > half or abs(by - ay) > half:
                     continue        # pair straddles the torus seam; a screen-wide line would lie
-                pygame.draw.line(frame, _shade(col_of.get(a, TEXT), 0.8), (ax, ay), (bx, by), w)
+                pygame.draw.aaline(frame, col, (ax, ay), (bx, by))
 
-    def _draw_selected_bonds(self, frame, world, i: int) -> None:
+    def _draw_signal(self, frame, world, idx, pos, radius, cols) -> None:
+        """Signal display: a thin outer ring whose contrast follows |signal|."""
+        canvas = theme().canvas
+        for (x, y), r, c, sig in zip(pos, radius, cols, world.signal[idx].abs().tolist()):
+            if sig > 0.15:
+                pygame.gfxdraw.aacircle(frame, x, y, r + 3, mix(canvas, c, min(1.0, sig)))
+
+    def _draw_selected(self, frame, world, i: int) -> None:
+        th = theme()
         x, y = (world.pos[i] * self.scale).tolist()
+        r = float(self.radii(world, torch.tensor([i]))[0])
+        sense = world.cfg.sense_radius * float(world.body([i])[2][0]) * self.scale
+        n = 48
+        for k in range(0, n, 2):     # dashed perception radius
+            a0, a1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+            pygame.draw.aaline(frame, th.muted, (x + sense * math.cos(a0), y + sense * math.sin(a0)),
+                               (x + sense * math.cos(a1), y + sense * math.sin(a1)))
         for b in world.bonds[i].tolist():
             if b >= 0:
                 bx, by = (world.pos[b] * self.scale).tolist()
                 if abs(bx - x) < self.px / 2 and abs(by - y) < self.px / 2:
-                    pygame.draw.line(frame, (255, 255, 255), (x, y), (bx, by), 1)
+                    pygame.draw.line(frame, th.text, (x, y), (bx, by), 2)
+        pygame.draw.circle(frame, th.accent, (x, y), r + 5, 2)
 
-    def _glow_sprite(self, col, level: float, r: float) -> pygame.Surface:
-        """Radial falloff in the particle's colour, pre-multiplied for BLEND_ADD; cached by bucket."""
-        q = (col[0] >> 5, col[1] >> 5, col[2] >> 5, min(5, int(level * 6)), int(r))
-        sprite = self._glow.get(q)
-        if sprite is None:
-            rad = int(r * 3.2) + 2
-            sprite = pygame.Surface((rad * 2, rad * 2))
-            sprite.fill((0, 0, 0))
-            base = [(c << 5) + 16 for c in q[:3]]
-            k = 0.25 + 0.75 * (q[3] + 1) / 6
-            steps = 10
-            for j in range(steps, 0, -1):
-                f = j / steps
-                a = k * (1 - f) ** 1.4 * 0.9
-                pygame.draw.circle(sprite, [int(c * a) for c in base], (rad, rad), rad * f)
-            self._glow[q] = sprite
-        return sprite
+    def _pheromone_surface(self, world) -> tuple[pygame.Surface, int]:
+        """Both scent channels summed into one subtle single-hue heatmap, smoothly upscaled.
 
-    def _pheromone_surface(self, world) -> pygame.Surface:
-        """2 scent channels -> two additive tints, smoothly upscaled to the view."""
-        ph = world.pheromone.detach().float().cpu()
-        level = 1 - torch.exp(-ph * 6.0)               # saturating, so strong trails don't clip flat
-        rgb = sum(level[c, :, :, None] * torch.tensor(PHEROMONE_TINTS[c]) for c in range(2))
-        arr = (rgb.clamp(0, 1) * 120).to(torch.uint8).numpy()   # [x, y, rgb] matches surfarray layout
+        Light theme multiplies a tint into the canvas; dark theme adds a glow-free tint.
+        """
+        th = theme()
+        ph = world.pheromone.detach().float().cpu().sum(0)
+        # Saturating, and never louder than the particles (dark backgrounds need less to show).
+        level = (1 - torch.exp(-ph * 4.0)) * (0.45 if th.name == "light" else 0.28)
+        hue = torch.tensor(th.heat, dtype=torch.float32) / 255
+        if th.name == "light":
+            rgb = 1 - level[:, :, None] * (1 - hue)
+            flags = pygame.BLEND_MULT
+        else:
+            rgb = level[:, :, None] * hue
+            flags = pygame.BLEND_ADD
+        arr = (rgb.clamp(0, 1) * 255).to(torch.uint8).numpy()   # [x, y, rgb] matches surfarray layout
         small = pygame.surfarray.make_surface(arr)
-        return pygame.transform.smoothscale(small, (self.px, self.px))
+        return pygame.transform.smoothscale(small, (self.px, self.px)), flags
 
 
 # ---------------------------------------------------------------------- panels
 
 
-class Graph:
-    """Tiny rolling line chart of a few stats, each series normalised to its own max."""
+def _resolve(col) -> RGB:
+    """A colour, or the name of a Theme field (so charts follow theme switches)."""
+    return getattr(theme(), col) if isinstance(col, str) else col
 
-    def __init__(self, series: dict[str, tuple[int, int, int]], length: int = 300):
-        self.series = series
+
+class Graph:
+    """Rolling line chart against simulation step, with round ticks and labelled axes."""
+
+    def __init__(self, series: dict[str, tuple[str, object]], length: int = 300):
+        self.series = series                          # key -> (label, colour or Theme field name)
+        self.steps: deque = deque(maxlen=length)
         self.data = {k: deque(maxlen=length) for k in series}
 
     def push(self, stats: dict) -> None:
+        self.steps.append(int(stats.get("step", len(self.steps))))
         for k in self.series:
             self.data[k].append(float(stats.get(k, 0)))
 
-    def draw(self, surface, rect: pygame.Rect) -> None:
-        panel(surface, rect, title="history")
-        plot = pygame.Rect(rect.x + 10, rect.y + 24, rect.w - 20, rect.h - 32)
-        for gy in range(1, 4):
-            y = plot.y + plot.h * gy / 4
-            pygame.draw.line(surface, (30, 33, 46), (plot.x, y), (plot.right, y))
-        x_label = rect.right - 10
-        for k, col in reversed(list(self.series.items())):
+    def draw(self, surface, rect: pygame.Rect, title: str = "Population over time") -> None:
+        th = theme()
+        y = section(surface, rect, title)
+        # Inline legend with current values, right-aligned on the heading row.
+        rx = rect.right
+        for k, (label, col) in reversed(list(self.series.items())):
             values = self.data[k]
-            if values:
-                x_label = text(surface, f"{k} {values[-1]:g}", (x_label, rect.y + 6), col, 11, anchor="topright").x - 10
-            if len(values) < 2:
-                continue
-            # Min-max per series (with a floor on the span) so slow drifts stay visible.
-            lo, hi = min(values), max(values)
-            span = max(hi - lo, 0.1 * abs(hi), 1e-6)
-            lo = lo - 0.1 * span
-            n = values.maxlen
-            pts = [(plot.x + plot.w * j / (n - 1), plot.bottom - plot.h * (v - lo) / (span * 1.2))
-                   for j, v in enumerate(values)]
-            pygame.draw.aalines(surface, col, False, pts)
+            r = text(surface, f"{values[-1]:,.0f}" if values else "–", (rx, rect.y + 2), th.text, 11, anchor="topright")
+            r = text(surface, label, (r.x - 4, rect.y + 2), th.muted, 11, anchor="topright")
+            pygame.draw.line(surface, _resolve(col), (r.x - 16, rect.y + 10), (r.x - 4, rect.y + 10), 2)
+            rx = r.x - 26
+        plot = pygame.Rect(rect.x + 34, y + 14, rect.w - 40, rect.bottom - y - 14 - 18)
+        if plot.h < 20:
+            return
+        hi = max((max(v) for v in self.data.values() if v), default=1.0)
+        ticks = nice_ticks(0, max(hi, 1.0), 3)
+        top = ticks[-1]
+        for t in ticks:
+            ty = plot.bottom - plot.h * t / top
+            pygame.draw.line(surface, th.grid if t else th.border, (plot.x, ty), (plot.right, ty))
+            text(surface, fmt_tick(t), (plot.x - 6, ty), th.muted, 10, anchor="midright")
+        text(surface, "Count", (rect.x, y - 2), th.muted, 10)
+        if len(self.steps) >= 2:
+            s0, s1 = self.steps[0], self.steps[-1]
+            span = max(1, s1 - s0)
+            for t in nice_ticks(s0, s1, 3):
+                if s0 <= t <= s1:
+                    tx = plot.x + plot.w * (t - s0) / span
+                    pygame.draw.line(surface, th.border, (tx, plot.bottom), (tx, plot.bottom + 3))
+                    label = fmt_tick(t)
+                    half = get_font(10).size(label)[0] / 2
+                    tx = min(max(tx, plot.x + half), rect.right - half)    # keep end labels inside
+                    text(surface, label, (tx, plot.bottom + 4), th.muted, 10, anchor="midtop")
+            for k, (_, col) in self.series.items():
+                pts = [(plot.x + plot.w * (s - s0) / span, plot.bottom - plot.h * v / top)
+                       for s, v in zip(self.steps, self.data[k])]
+                pygame.draw.aalines(surface, _resolve(col), False, pts)
+        text(surface, "Step", (rect.x, plot.bottom + 4), th.muted, 10)
 
 
-def draw_legend(surface, rect: pygame.Rect, world, active: bool) -> None:
-    """Species counts with swatches matching the species colour mode, as stacked bars."""
+def species_height(world) -> int:
+    """Height `draw_species` needs: heading, stacked bar, two-column list."""
+    return 22 + 18 + 17 * math.ceil(max(1, world.cfg.species_k) / 3)
+
+
+def draw_species(surface, rect: pygame.Rect, world, active: bool) -> None:
+    """Behavioural species: one stacked bar of shares, then a three-column count list."""
+    th = theme()
     counts = world.species_counts()
-    panel(surface, rect, title="species" + ("  (colour mode)" if active else ""))
+    y = section(surface, rect, "Behavioural species", "colouring particles" if active else "")
     if not counts:
-        text(surface, "classifying...", (rect.x + 10, rect.y + 26), DIM, 12)
+        text(surface, "Classifying… (every %d steps)" % world.cfg.species_interval, (rect.x, y), th.muted, 12)
         return
     names = world.species.names
     total = max(1, sum(counts.values()))
-    y = rect.y + 25
-    bar_x, bar_w = rect.x + 120, rect.w - 170
-    for sid, name in enumerate(names):
-        c = counts.get(name, 0)
-        if c == 0:
-            continue
-        col = species_rgb(sid)
-        pygame.draw.circle(surface, col, (rect.x + 16, y + 7), 5)
-        text(surface, name, (rect.x + 28, y), TEXT, 12)
-        pygame.draw.rect(surface, (32, 35, 48), (bar_x, y + 3, bar_w, 8), border_radius=3)
-        pygame.draw.rect(surface, col, (bar_x, y + 3, max(2, bar_w * c / total), 8), border_radius=3)
-        text(surface, str(c), (rect.right - 10, y), DIM, 12, anchor="topright")
-        y += 17
-        if y > rect.bottom - 14:
-            break
+    bar = pygame.Rect(rect.x, y + 2, rect.w, 8)
+    x = bar.x
+    items = [(sid, name, counts[name]) for sid, name in enumerate(names) if counts.get(name, 0)]
+    for k, (sid, _, c) in enumerate(items):
+        w = bar.w * c / total if k < len(items) - 1 else bar.right - x
+        pygame.draw.rect(surface, species_rgb(sid), (round(x), bar.y, math.ceil(w), bar.h))
+        x += w
+    y = bar.bottom + 8
+    gap = 14
+    col_w = (rect.w - 2 * gap) / 3
+    for k, (sid, name, c) in enumerate(items):
+        cx, cy = rect.x + (k % 3) * (col_w + gap), y + (k // 3) * 17
+        pygame.draw.rect(surface, species_rgb(sid), (cx, cy + 4, 9, 9), border_radius=2)
+        text(surface, name.capitalize(), (cx + 14, cy), th.text, 12)
+        text(surface, f"{c}", (cx + col_w, cy), th.muted, 12, anchor="topright")
 
 
-def _act_color(a: float) -> tuple[int, int, int]:
-    """Activation -> node fill: warm for positive, cool for negative, dark when silent."""
-    m = min(1.0, abs(a))
-    hue = POS_EDGE if a >= 0 else NEG_EDGE
-    return tuple(int(28 + (c - 28) * m) for c in hue)
+def draw_legend(surface, rect: pygame.Rect, color_mode: str) -> None:
+    """What the marks on the world view mean."""
+    th = theme()
+    y = section(surface, rect, "Legend")
+    col_w = rect.w // 2
+    sample = (110, 140, 175)
+    for k, kind in enumerate(("size", "colour", "attack", "bond", "food", "patch")):
+        x, yy = rect.x + (k % 2) * col_w + 8, y + (k // 2) * 20 + 8
+        label_x = x + 22
+        if kind == "size":
+            for dx, r in ((-2, 3), (8, 6)):
+                pygame.gfxdraw.filled_circle(surface, x + dx, yy, r, sample)
+                pygame.gfxdraw.aacircle(surface, x + dx, yy, r, shade(sample, 0.65))
+            label = "Size = body size"
+        elif kind == "attack":
+            pygame.gfxdraw.filled_circle(surface, x, yy, 5, sample)
+            pygame.gfxdraw.aacircle(surface, x, yy, 5, th.negative)
+            pygame.gfxdraw.aacircle(surface, x, yy, 6, th.negative)
+            label = "Red outline = attacking"
+        elif kind == "bond":
+            pygame.draw.aaline(surface, th.bond, (x - 6, yy + 4), (x + 6, yy - 4))
+            label = "Line = bond"
+        elif kind == "food":
+            pygame.draw.circle(surface, th.food, (x, yy), 2)
+            label = "Dot = food"
+        elif kind == "colour":
+            palette = {"lineage": [muted(c) for c in ((1, .3, .2), (.2, .8, .4), (.3, .4, 1))],
+                       "type": DARK2[:3], "species": TABLEAU10[:3]}[color_mode]
+            for j, c in enumerate(palette):
+                pygame.gfxdraw.filled_circle(surface, x - 3 + j * 7, yy, 3, c)
+            label = "Colour = " + COLOR_MODE_LABELS[color_mode]
+        else:
+            for j in range(0, 12, 2):
+                a0, a1 = 2 * math.pi * j / 12, 2 * math.pi * (j + 1) / 12
+                pygame.draw.aaline(surface, th.muted, (x + 6 * math.cos(a0), yy + 6 * math.sin(a0)),
+                                   (x + 6 * math.cos(a1), yy + 6 * math.sin(a1)))
+            label = "Ring = fertile patch"
+        text(surface, label, (label_x, yy), th.muted, 11, anchor="midleft")
+
+
+def _node_fill(a: float) -> RGB:
+    """Activation -> node fill: blue for positive, red for negative, panel colour when silent."""
+    th = theme()
+    return mix(th.panel, th.accent if a >= 0 else th.negative, min(1.0, abs(a)))
 
 
 def draw_brain(surface, rect: pygame.Rect, world, i: int, max_edges: int = 60) -> None:
-    """Layered node-link diagram of particle i's brain, lit by its last activations."""
+    """Layered node-link diagram of particle i's network, nodes shaded by its last activations."""
+    th = theme()
     g = world.genome
     w1 = g.w1[i]                                    # (N_INPUTS, hidden)
     w2 = g.w2[i] + world.plastic[i]                 # effective, including lifetime learning
@@ -314,9 +524,10 @@ def draw_brain(surface, rect: pygame.Rect, world, i: int, max_edges: int = 60) -
     outputs = world.last_outputs[i].tolist()
     n_h = len(hidden)
 
-    label_w = 78
-    top, bottom = rect.y + 8, rect.bottom - 8
-    xs = (rect.x + label_w, rect.x + rect.w * 0.5, rect.right - 98)
+    top, bottom = rect.y + 18, rect.bottom - 4
+    xs = (rect.x + 82, rect.x + rect.w * 0.5, rect.right - 104)
+    for x, label in zip(xs, (f"Inputs ({N_INPUTS})", f"Hidden ({n_h})", f"Outputs ({len(outputs)})")):
+        text(surface, label, (x, rect.y), th.muted, 10, anchor="midtop")
 
     def column(n, pad=0.0):
         span = bottom - top
@@ -324,11 +535,10 @@ def draw_brain(surface, rect: pygame.Rect, world, i: int, max_edges: int = 60) -
 
     y_in, y_h, y_out = column(N_INPUTS), column(n_h, 0.04), column(len(outputs), 0.16)
 
-    # Strongest edges, split between layers in proportion to their size so neither vanishes.
+    # Strongest edges per layer (60/40 split) so neither layer vanishes from the picture.
     k1 = round(max_edges * 0.6)
-    k2 = max_edges - k1
     v1, f1 = w1.abs().flatten().topk(min(k1, w1.numel()))
-    v2, f2 = w2.abs().flatten().topk(min(k2, w2.numel()))
+    v2, f2 = w2.abs().flatten().topk(min(max_edges - k1, w2.numel()))
     edges = []
     for wm, flat, mag, (xa, ya), (xb, yb) in ((w1, f1, v1, (xs[0], y_in), (xs[1], y_h)),
                                               (w2, f2, v2, (xs[1], y_h), (xs[2], y_out))):
@@ -341,27 +551,32 @@ def draw_brain(surface, rect: pygame.Rect, world, i: int, max_edges: int = 60) -
     layer = pygame.Surface(rect.size, pygame.SRCALPHA)
     ox, oy = rect.topleft
     for (x0, y0), (x1, y1), w, rel in sorted(edges, key=lambda e: e[3]):
-        col = POS_EDGE if w >= 0 else NEG_EDGE
-        width = 1 + int(rel * 2.5)
-        pygame.draw.line(layer, (*col, int(40 + 190 * rel)), (x0 - ox, y0 - oy), (x1 - ox, y1 - oy), width)
+        col = th.accent if w >= 0 else th.negative
+        pygame.draw.line(layer, (*col, int(45 + 175 * rel)), (x0 - ox, y0 - oy), (x1 - ox, y1 - oy),
+                         1 + int(rel * 2.2))
     surface.blit(layer, rect.topleft)
 
+    edge = th.muted
+
     def node(x, y, a, r):
-        pygame.draw.circle(surface, _act_color(a), (x, y), r)
-        pygame.draw.circle(surface, (70, 75, 95), (x, y), r, 1)
+        pygame.gfxdraw.filled_circle(surface, int(x), int(y), r, _node_fill(a))
+        pygame.gfxdraw.aacircle(surface, int(x), int(y), r, edge)
 
     for k, (y, a) in enumerate(zip(y_in, inputs)):
-        node(xs[0], y, a, 4)
-        text(surface, SENSE_NAMES[k], (xs[0] - 8, y), DIM if abs(a) < 0.05 else TEXT, 10, anchor="midright")
+        node(xs[0], y, a, 3)
+        text(surface, SENSE_NAMES[k].capitalize(), (xs[0] - 7, y), th.text if abs(a) >= 0.05 else th.muted, 10,
+             anchor="midright")
     for y, a in zip(y_h, hidden):
-        node(xs[1], y, a, 5)
+        node(xs[1], y, a, 4)
     for k, (y, a) in enumerate(zip(y_out, outputs)):
-        node(xs[2], y, a, 6)
-        text(surface, f"{OUTPUT_NAMES[k]} {a:+.2f}", (xs[2] + 10, y), TEXT, 10, anchor="midleft")
+        node(xs[2], y, a, 5)
+        text(surface, OUTPUT_NAMES[k].capitalize(), (xs[2] + 9, y), th.text, 10, anchor="midleft")
+        text(surface, f"{a:+.2f}", (rect.right - 2, y), th.muted, 10, anchor="midright", mono=True)
 
 
 def draw_inspector(surface, rect: pygame.Rect, world, i: int, color) -> None:
-    """Selected particle: identity, body, diet, learning, then its brain."""
+    """Selected particle: identity, body, diet, learning, energy, then its neural network."""
+    th = theme()
     g, cfg = world.genome, world.cfg
     size, speed, sense = (float(t[0]) for t in world.body([i]))
     sigma = g.sigma[i].tolist()
@@ -373,44 +588,46 @@ def draw_inspector(surface, rect: pygame.Rect, world, i: int, color) -> None:
     energy = float(world.energy[i])
     full = cfg.reproduce_threshold * size
 
-    panel(surface, rect)
-    pygame.draw.circle(surface, color, (rect.x + 18, rect.y + 17), 7)
-    text(surface, f"#{int(world.uid[i])}", (rect.x + 32, rect.y + 8), TEXT, 15, bold=True)
-    text(surface, species, (rect.right - 10, rect.y + 9), species_rgb(sid), 13, bold=True, anchor="topright")
+    y = rect.y
+    pygame.gfxdraw.filled_circle(surface, rect.x + 6, y + 9, 6, color)
+    pygame.gfxdraw.aacircle(surface, rect.x + 6, y + 9, 6, shade(color, 0.65))
+    text(surface, f"Particle {int(world.uid[i])}", (rect.x + 18, y), th.text, 14, bold=True)
+    tag = text(surface, species.capitalize(), (rect.right, y + 2), th.text, 12, anchor="topright")
+    pygame.draw.rect(surface, species_rgb(sid), (tag.x - 14, tag.y + 4, 9, 9), border_radius=2)
+    y += 26
 
-    x0, y = rect.x + 12, rect.y + 32
-    prey_share = prey / (prey + food) if prey + food > 0 else 0.0
+    share = prey / (prey + food) if prey + food > 0 else 0.0
     rows = [
-        [("gen", f"{int(world.generation[i])}"), ("age", f"{int(world.age[i])}"),
-         ("type", f"{int(g.ptype[i])}"), ("bonds", f"{bonds}/{cfg.max_bonds}")],
-        [("size", f"{size:.2f}"), ("speed", f"{speed:.2f}"), ("sense", f"{sense:.2f}"),
-         ("bud", f"{float(g.bud[i]):.2f}")],
-        [("prey", f"{prey:.1f}"), ("food", f"{food:.1f}"), ("diet", f"{prey_share:.0%} meat"), ("", "")],
-        [("σ in", f"{sigma[0]:.2f}"), ("out", f"{sigma[1]:.2f}"), ("phys", f"{sigma[2]:.2f}"),
-         ("body", f"{sigma[3]:.2f}")],
+        (("Generation", f"{int(world.generation[i])}"), ("Age", f"{int(world.age[i]):,}"),
+         ("Physical type", f"{int(g.ptype[i])}")),
+        (("Body size", f"{size:.2f}"), ("Speed", f"{speed:.2f}"), ("Sense", f"{sense:.2f}")),
+        (("Bonds", f"{bonds} / {cfg.max_bonds}"), ("Bud prob.", f"{float(g.bud[i]):.2f}"),
+         ("Learning rate", f"{eta:.4f}")),
+        (("Food energy", f"{food:.1f}"), ("Prey energy", f"{prey:.1f}"), ("Predation", f"{share:.0%}")),
     ]
-    col_w = (rect.w - 24) / 4
+    gap = 14
+    col_w = (rect.w - 2 * gap) / 3
     for row in rows:
         for k, (label, value) in enumerate(row):
-            if label:
-                r = text(surface, label, (x0 + k * col_w, y + 1), DIM, 11)
-                text(surface, value, (r.right + 4, y), TEXT, 12)
-        y += 16
-    text(surface, "learn", (x0, y + 1), DIM, 11)
-    text(surface, f"{eta:.4f}", (x0 + 40, y), TEXT, 12)
-    text(surface, "σ = evolved mutation step", (x0 + col_w * 2, y + 1), DIM, 10)
-    y += 18
+            x0 = rect.x + k * (col_w + gap)
+            text(surface, label, (x0, y), th.muted, 11)
+            text(surface, value, (x0 + col_w, y), th.text, 11, anchor="topright")
+        y += 17
+    text(surface, "Mutation step σ (inputs / outputs / physics / body)", (rect.x, y), th.muted, 11)
+    text(surface, " / ".join(f"{v:.2f}" for v in sigma), (rect.right, y), th.text, 11, anchor="topright")
+    y += 19
 
-    # Energy bar: how close to splitting.
-    text(surface, f"energy {energy:.2f}", (x0, y), TEXT, 12)
-    bar = pygame.Rect(x0 + 100, y + 4, rect.w - 124, 8)
-    pygame.draw.rect(surface, (32, 35, 48), bar, border_radius=3)
-    pygame.draw.rect(surface, ACCENT, (bar.x, bar.y, max(2, bar.w * min(1, energy / full)), bar.h), border_radius=3)
-    y += 20
-    pygame.draw.line(surface, PANEL_EDGE, (rect.x + 8, y), (rect.right - 8, y))
-    text(surface, "BRAIN", (x0, y + 4), DIM, 11, bold=True)
-    text(surface, "warm +  cool -   top 60 weights", (rect.right - 10, y + 5), DIM, 10, anchor="topright")
-    draw_brain(surface, pygame.Rect(rect.x + 4, y + 18, rect.w - 8, rect.bottom - y - 22), world, i)
+    text(surface, "Energy", (rect.x, y), th.muted, 11)
+    val = text(surface, f"{energy:.2f} of {full:.2f} to divide", (rect.right, y), th.text, 11, anchor="topright")
+    bar = pygame.Rect(rect.x + 50, y + 6, val.x - rect.x - 62, 5)
+    pygame.draw.rect(surface, th.grid, bar, border_radius=2)
+    pygame.draw.rect(surface, th.accent, (bar.x, bar.y, max(2, bar.w * min(1, energy / full)), bar.h), border_radius=2)
+    y += 24
+
+    rule(surface, rect.x, rect.right, y - 4)
+    y = section(surface, pygame.Rect(rect.x, y + 4, rect.w, 20), "Neural network",
+                "60 strongest weights · blue +, red −")
+    draw_brain(surface, pygame.Rect(rect.x, y, rect.w, rect.bottom - y), world, i)
 
 
 class TreePanel:
@@ -420,31 +637,36 @@ class TreePanel:
         self.interval = interval
         self.last = -math.inf
         self.surface: pygame.Surface | None = None
-        self.where: dict[int, tuple[float, float]] = {}   # uid -> (x, y) inside the panel
-        self.parent: dict[int, int] = {}
+        self.where: dict[int, tuple[float, float]] = {}   # uid -> (x, y) on screen
         self.rect = pygame.Rect(0, 0, 0, 0)
+        self.plot = pygame.Rect(0, 0, 0, 0)
         self.info = ""
+        self._theme = ""
 
     def draw(self, surface, rect: pygame.Rect, world, selected_uid: int | None = None, force: bool = False) -> None:
         now = time.perf_counter()
-        if force or self.surface is None or rect != self.rect or now - self.last > self.interval:
+        stale = self.surface is None or rect != self.rect or self._theme != theme().name
+        if force or stale or now - self.last > self.interval:
             self._layout(world, rect)
             self.last = now
         surface.blit(self.surface, rect.topleft)
         if selected_uid is not None and selected_uid in self.where:
-            self._highlight(surface, rect, world, selected_uid)
+            self._highlight(surface, world, selected_uid)
 
     def _layout(self, world, rect: pygame.Rect) -> None:
-        self.rect = rect.copy()
-        surf = pygame.Surface(rect.size, pygame.SRCALPHA)
-        panel(surf, surf.get_rect(), alpha=235, title="family tree")
+        th = theme()
+        self.rect, self._theme = rect.copy(), th.name
+        surf = pygame.Surface(rect.size)
+        surf.fill(th.panel)
+        self.surface = surf
+        self.where = {}
         alive_uids = world.uid[world.alive].tolist()
         nodes = world.lineage.living_tree(alive_uids)
-        self.where, self.parent = {}, {}
-        self.surface = surf
+        section(surf, pygame.Rect(0, 0, rect.w, 20), "Family tree", "click a branch to inspect")
         if not nodes:
             return
-        plot = pygame.Rect(10, 26, rect.w - 20, rect.h - 46)
+        plot = pygame.Rect(0, 40, rect.w - 6, rect.h - 40 - 34)
+        self.plot = plot.move(rect.x, rect.y)
         now = world.step_count
         t0 = min(n["born"] for n in nodes)
         span = max(1, now - t0)
@@ -481,40 +703,41 @@ class TreePanel:
             return plot.y + plot.h * (v + 0.5) / max(slots, 1)
 
         x_now = px(now)
-        thin = slots > plot.h
         for u in order:
             n = by_uid[u]
             x, y = px(n["born"]), py(y_slot[u])
             self.where[u] = (x + rect.x, y + rect.y)
-            self.parent[u] = n["parent"]
-            col = vivid(n["color"])
+            col = muted(n["color"])
             if n["parent"] >= 0:
                 p = by_uid[n["parent"]]
                 xp, yp = px(p["born"]), py(y_slot[p["uid"]])
-                pygame.draw.line(surf, _shade(col, 0.75), (xp, yp), (xp, y))
-                pygame.draw.line(surf, _shade(col, 0.75), (xp, y), (x, y))
-            if n["alive"]:
-                pygame.draw.line(surf, _shade(col, 0.35 if thin else 0.55), (x, y), (x_now, y))
-                surf.fill(col, (int(x_now) - 1, int(y), 3, 1 if thin else 2))
-        # Time axis.
-        axis_y = rect.h - 16
-        pygame.draw.line(surf, PANEL_EDGE, (plot.x, axis_y), (plot.right, axis_y))
-        text(surf, f"step {t0}", (plot.x, axis_y + 2), DIM, 10)
-        text(surf, f"{now}", (plot.right, axis_y + 2), DIM, 10, anchor="topright")
-        roots_alive = len(roots)
-        self.info = f"{len(alive_uids)} living  {len(nodes)} nodes  {roots_alive} roots"
-        text(surf, self.info, (rect.w - 10, 8), DIM, 10, anchor="topright")
+                pygame.draw.line(surf, col, (xp, yp), (xp, y))
+                pygame.draw.line(surf, col, (xp, y), (x, y))
+            if n["alive"]:      # lifespan so far, lighter so the branching structure dominates
+                pygame.draw.line(surf, mix(th.panel, col, 0.45), (x, y), (x_now, y))
 
-    def _highlight(self, surface, rect, world, uid: int) -> None:
+        # Time axis with round ticks.
+        axis_y = plot.bottom + 4
+        pygame.draw.line(surf, th.border, (plot.x, axis_y), (plot.right, axis_y))
+        for t in nice_ticks(t0, now, 4):
+            if t0 <= t <= now:
+                tx = px(t)
+                pygame.draw.line(surf, th.border, (tx, axis_y), (tx, axis_y + 3))
+                text(surf, fmt_tick(t), (tx, axis_y + 4), th.muted, 10, anchor="midtop")
+        text(surf, "Birth step", (plot.centerx, axis_y + 17), th.muted, 10, anchor="midtop")
+        self.info = f"{len(alive_uids)} living · {len(nodes)} nodes · {len(roots)} founding lines"
+        text(surf, self.info, (0, 22), th.muted, 11)
+
+    def _highlight(self, surface, world, uid: int) -> None:
         """Ancestry of the selected particle drawn over the cached tree."""
+        th = theme()
         chain = world.lineage.ancestors(uid, depth=100_000)
         pts = [self.where[u] for u in chain if u in self.where]
-        x_now = rect.x + 10 + (rect.w - 20)
         x, y = self.where[uid]
-        pygame.draw.line(surface, (255, 255, 255), (x, y), (x_now, y), 2)
+        pygame.draw.line(surface, th.text, (x, y), (self.plot.right, y), 2)
         for (xc, yc), (xp, yp) in zip(pts, pts[1:]):
-            pygame.draw.line(surface, (255, 255, 255), (xp, yp), (xp, yc), 2)
-            pygame.draw.line(surface, (255, 255, 255), (xp, yc), (xc, yc), 2)
-        pygame.draw.circle(surface, (255, 255, 255), (x_now, y), 4)
+            pygame.draw.line(surface, th.text, (xp, yp), (xp, yc), 2)
+            pygame.draw.line(surface, th.text, (xp, yc), (xc, yc), 2)
+        pygame.draw.circle(surface, th.accent, (self.plot.right, y), 4)
         if pts:
-            pygame.draw.circle(surface, ACCENT, pts[-1], 4)
+            pygame.draw.circle(surface, th.accent, pts[-1], 4)

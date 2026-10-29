@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pygame
 
-from .render import ACCENT, TEXT, Renderer, text
+from .render import Renderer, card, get_font, text, theme
 
 
 class VideoWriter:
@@ -81,9 +81,13 @@ def run_timelapse(world, steps: int, every: int, out_path: str, size: int = 720,
 
 
 def _caption(frame: pygame.Surface, world) -> None:
-    ui = max(10, frame.get_width() // 60)
-    text(frame, f"step {world.step_count}", (10, 8), ACCENT, ui, bold=True)
-    text(frame, f"pop {world.population}", (10, 10 + ui), TEXT, ui - 1)
+    """Small bordered label: step and population, so a timelapse frame stands on its own."""
+    size = max(10, frame.get_width() // 64)
+    label = f"Step {world.step_count:,}  ·  Population {world.population:,}"
+    w, h = get_font(size).size(label)
+    box = pygame.Rect(8, 8, w + 2 * size, h + size)
+    card(frame, box)
+    text(frame, label, box.center, theme().text, size, anchor="center")
 
 
 def cmd_timelapse(args) -> None:

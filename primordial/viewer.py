@@ -1,24 +1,26 @@
-"""Real-time pygame window onto a World: world view on the left, side panel on the right."""
+"""Real-time pygame window onto a World: world view on the left, analysis side panel on the right."""
 
 import time
 from dataclasses import dataclass
 
 import pygame
+import pygame.gfxdraw
 import torch
 
 from . import render
-from .render import ACCENT, BG, DIM, TEXT, Graph, Renderer, TreePanel, panel, text
+from .render import Graph, Renderer, TreePanel, card, rule, section, text, theme
 from .world import World
 
-SIDE = 340               # side panel width
-TOOLS = ("inspect", "food", "meteor")
-HELP = ("SPACE pause   UP/DOWN speed   1 inspect  2 food  3 meteor   L/R-click use / drop food   [ ] climate",
-        "C colours   T trails   O scent   B bonds   P patches   F tree   G sliders   R record   S save   H hud   Q quit")
+SIDE = 400               # side panel width
+PAD = 16                 # side panel gutter
+TOOLS = ("inspect", "add food", "remove area")
+SHORT_HELP = "Space pause · 1–3 interventions · F family tree · G parameters · D theme"
 
 
 @dataclass
 class Slider:
     key: str          # Config field edited live
+    label: str
     lo: float
     hi: float
     fmt: str = "{:.3f}"
@@ -31,36 +33,36 @@ class Slider:
 
 
 SLIDERS = [
-    Slider("food_regrow_prob", 0.0, 0.02, "{:.4f}"),
-    Slider("attack_rate", 0.0, 0.1),
-    Slider("mutation_rate", 0.0, 0.5),
-    Slider("climate_amplitude", 0.0, 1.0, "{:.2f}"),
-    Slider("pheromone_decay", 0.0, 0.05, "{:.4f}"),
-    Slider("bond_strength", 0.0, 120.0, "{:.1f}"),
-    Slider("mate_prob", 0.0, 1.0, "{:.2f}"),
-    Slider("plasticity", 0.0, 3.0, "{:.2f}"),
+    Slider("food_regrow_prob", "Food regrowth probability", 0.0, 0.02, "{:.4f}"),
+    Slider("attack_rate", "Attack rate", 0.0, 0.1),
+    Slider("mutation_rate", "Mutation rate", 0.0, 0.5),
+    Slider("climate_amplitude", "Climate amplitude", 0.0, 1.0, "{:.2f}"),
+    Slider("pheromone_decay", "Pheromone decay", 0.0, 0.05, "{:.4f}"),
+    Slider("bond_strength", "Bond strength", 0.0, 120.0, "{:.1f}"),
+    Slider("mate_prob", "Mating probability", 0.0, 1.0, "{:.2f}"),
+    Slider("plasticity", "Plasticity", 0.0, 3.0, "{:.2f}"),
 ]
 
 
 class SliderPanel:
     """Pygame-drawn sliders that live-edit world.cfg; drag a track to change a value."""
 
-    ROW = 34
+    ROW = 36
 
     def __init__(self, sliders: list[Slider]):
         self.sliders = sliders
-        self.rect = pygame.Rect(0, 0, 330, 30 + self.ROW * len(sliders))
+        self.rect = pygame.Rect(0, 0, 320, 52 + self.ROW * len(sliders))
         self.active: Slider | None = None
 
     def track(self, k: int) -> pygame.Rect:
-        return pygame.Rect(self.rect.x + 14, self.rect.y + 26 + k * self.ROW + 18, self.rect.w - 28, 6)
+        return pygame.Rect(self.rect.x + 16, self.rect.y + 46 + k * self.ROW + 18, self.rect.w - 32, 4)
 
     def press(self, pos, cfg) -> bool:
         """Start a drag if `pos` hits a track (with a forgiving hit box). True if consumed."""
         if not self.rect.collidepoint(pos):
             return False
         for k, s in enumerate(self.sliders):
-            if self.track(k).inflate(8, 18).collidepoint(pos):
+            if self.track(k).inflate(10, 22).collidepoint(pos):
                 self.active = s
                 self.drag(pos, cfg)
                 break
@@ -75,18 +77,24 @@ class SliderPanel:
         self.active = None
 
     def draw(self, surface, cfg) -> None:
-        panel(surface, self.rect, alpha=230, title="world sliders  (drag)")
+        th = theme()
+        card(surface, self.rect)
+        section(surface, pygame.Rect(self.rect.x + 16, self.rect.y + 12, self.rect.w - 32, 20), "Parameters",
+                "drag to adjust · live")
         for k, s in enumerate(self.sliders):
             t = self.track(k)
             f = min(1.0, max(0.0, s.frac(cfg)))
             hot = s is self.active
-            text(surface, s.key, (t.x, t.y - 16), ACCENT if hot else TEXT, 12)
-            text(surface, s.fmt.format(getattr(cfg, s.key)), (t.right, t.y - 16), ACCENT, 12, bold=True,
+            text(surface, s.label, (t.x, t.y - 17), th.text, 12)
+            text(surface, s.fmt.format(getattr(cfg, s.key)), (t.right, t.y - 17), th.accent if hot else th.text, 12,
                  anchor="topright")
-            pygame.draw.rect(surface, (34, 38, 52), t, border_radius=3)
-            pygame.draw.rect(surface, ACCENT if hot else (200, 160, 90), (t.x, t.y, max(3, t.w * f), t.h),
-                             border_radius=3)
-            pygame.draw.circle(surface, (240, 240, 245), (t.x + t.w * f, t.centery), 7 if hot else 6)
+            pygame.draw.rect(surface, th.grid, t.inflate(0, 0), border_radius=2)
+            pygame.draw.rect(surface, th.accent, (t.x, t.y, max(2, t.w * f), t.h), border_radius=2)
+            knob = (int(t.x + t.w * f), t.centery)
+            pygame.gfxdraw.filled_circle(surface, *knob, 6, th.panel)
+            pygame.gfxdraw.aacircle(surface, *knob, 6, th.accent)
+            if hot:
+                pygame.gfxdraw.aacircle(surface, *knob, 5, th.accent)
 
 
 class Viewer:
@@ -101,10 +109,10 @@ class Viewer:
         self.steps_per_frame = steps_per_frame
         self.save_path = save_path
         self.renderer = Renderer(size, world.cfg.world_size)
-        self.graph = Graph({"population": (230, 230, 235), "lineages": (90, 200, 255), "food": render.FOOD})
+        self.graph = Graph({"population": ("Population", "accent"), "food": ("Food items", "food")})
         self.tree = TreePanel(interval=1.0)
         self.sliders = SliderPanel(SLIDERS)
-        self.sliders.rect.bottomleft = (10, size - 46)
+        self.sliders.rect.bottomleft = (12, size - 12)
         self.tool = "inspect"
         self.paused = False
         self.show_hud = True
@@ -113,8 +121,9 @@ class Viewer:
         self.selected: int | None = None
         self.selected_uid = -1
         self.recorder = None
+        self._rec_start = 0.0
         self.flash = ("", 0.0)
-        self.effects: list[tuple[float, float, float, float]] = []   # meteor shockwaves: x, y, r, t0
+        self.effects: list[tuple[float, float, float, float]] = []   # removed areas: x, y, r, t0
         self.stats: dict = world.stats()
         self._stats_at = 0.0
         self.running = True
@@ -142,6 +151,10 @@ class Viewer:
 
     def key(self, key: int) -> None:
         r, w = self.renderer, self.world
+        toggles = {pygame.K_t: "trails", pygame.K_o: "show_pheromone", pygame.K_v: "show_signal",
+                   pygame.K_b: "show_bonds", pygame.K_p: "show_patches"}
+        names = {"trails": "Trails", "show_pheromone": "Pheromone field", "show_signal": "Signal display",
+                 "show_bonds": "Bonds", "show_patches": "Fertile patches"}
         if key in (pygame.K_q, pygame.K_ESCAPE):
             self.running = False
         elif key == pygame.K_SPACE:
@@ -153,30 +166,28 @@ class Viewer:
         elif key in (pygame.K_1, pygame.K_2, pygame.K_3):
             self.tool = TOOLS[key - pygame.K_1]
         elif key == pygame.K_c:
-            self.say(f"colour by {r.cycle_colors()}")
-        elif key == pygame.K_t:
-            r.trails = not r.trails
-        elif key == pygame.K_o:
-            r.show_pheromone = not r.show_pheromone
-        elif key == pygame.K_b:
-            r.show_bonds = not r.show_bonds
-        elif key == pygame.K_p:
-            r.show_patches = not r.show_patches
+            self.say(f"Colour by {render.COLOR_MODE_LABELS[r.cycle_colors()]}")
+        elif key in toggles:
+            attr = toggles[key]
+            setattr(r, attr, not getattr(r, attr))
+            self.say(f"{names[attr]} {'on' if getattr(r, attr) else 'off'}")
         elif key == pygame.K_f:
             self.show_tree = not self.show_tree
         elif key == pygame.K_g:
             self.show_sliders = not self.show_sliders
+        elif key == pygame.K_d:
+            render.set_theme("dark" if theme().name == "light" else "light")
         elif key in (pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET):
             delta = 0.25 if key == pygame.K_RIGHTBRACKET else -0.25
             w.food_multiplier = round(min(3.0, max(0.0, w.food_multiplier + delta)), 2)
-            self.say(f"food growth x{w.food_multiplier:.2f}")
+            self.say(f"Food growth ×{w.food_multiplier:.2f}")
         elif key == pygame.K_h:
             self.show_hud = not self.show_hud
         elif key == pygame.K_r:
             self.toggle_recording()
         elif key == pygame.K_s:
             w.save(self.save_path)
-            self.say(f"saved {self.save_path}")
+            self.say(f"Saved {self.save_path}")
 
     def click(self, pos, button: int) -> None:
         if self.show_sliders and self.show_hud and button == 1 and self.sliders.press(pos, self.world.cfg):
@@ -187,20 +198,20 @@ class Viewer:
             return
         x, y = self.renderer.to_world(*pos)
         if button == 3:
-            self.say(f"dropped {self.world.drop_food(x, y)} food")
+            self.say(f"Added {self.world.drop_food(x, y)} food items")
         elif button == 1:
             self.use_tool(x, y)
 
     def use_tool(self, x: float, y: float) -> None:
-        """Apply the current god tool at world coordinates (x, y)."""
+        """Apply the current intervention at world coordinates (x, y)."""
         w = self.world
         if self.tool == "inspect":
             self.select(_pick(w, x, y, radius=20 / self.renderer.scale))
-        elif self.tool == "food":
-            self.say(f"dropped {w.drop_food(x, y)} food")
-        elif self.tool == "meteor":
+        elif self.tool == "add food":
+            self.say(f"Added {w.drop_food(x, y)} food items")
+        elif self.tool == "remove area":
             radius = 0.08
-            self.say(f"meteor: {w.meteor(x, y, radius)} killed")
+            self.say(f"Removed {w.meteor(x, y, radius)} particles")
             self.effects.append((x, y, radius, time.time()))
 
     def select(self, slot: int | None) -> None:
@@ -208,7 +219,7 @@ class Viewer:
         self.selected_uid = int(self.world.uid[slot]) if slot is not None else -1
 
     def pick_from_tree(self, pos) -> None:
-        """Click a living leaf of the family tree to select that particle."""
+        """Click a living branch of the family tree to select that particle."""
         best, best_d = None, 8.0
         for uid, (x, y) in self.tree.where.items():
             d = abs(pos[1] - y) + 0.02 * abs(pos[0] - x)
@@ -224,10 +235,11 @@ class Viewer:
 
         if self.recorder is None:
             self.recorder = VideoWriter(f"recordings/{time.strftime('%Y%m%d_%H%M%S')}.mp4", fps=30)
-            self.say(f"recording -> {self.recorder.path}")
+            self._rec_start = time.time()
+            self.say(f"Recording to {self.recorder.path}")
         else:
             path = self.recorder.close()
-            self.say(f"saved {path} ({self.recorder.frames} frames)")
+            self.say(f"Saved {path} ({self.recorder.frames} frames)")
             self.recorder = None
 
     # ------------------------------------------------------------------ update
@@ -240,7 +252,7 @@ class Viewer:
         # Slots are recycled for newborns, so identity is the uid, not the slot.
         if self.selected is not None:
             if not bool(w.alive[self.selected]) or int(w.uid[self.selected]) != self.selected_uid:
-                self.say("selected particle died")
+                self.say("Selected particle died")
                 self.select(None)
         now = time.time()
         if now - self._stats_at > 0.25:      # stats() does many reductions; 4 Hz is plenty for a HUD
@@ -263,133 +275,139 @@ class Viewer:
             self.recorder.add(screen)
 
     def _draw_effects(self, screen) -> None:
-        now, keep = time.time(), []
+        th, now, keep = theme(), time.time(), []
         for x, y, r, t0 in self.effects:
             age = now - t0
             if age < 0.8:
                 keep.append((x, y, r, t0))
                 sx, sy = self.renderer.to_screen(x, y)
-                rad = r * self.renderer.scale * (0.4 + age * 1.2)
-                k = 1 - age / 0.8
-                pygame.draw.circle(screen, (int(255 * k), int(140 * k), int(40 * k)), (sx, sy), rad, 3)
+                col = render.mix(th.canvas, th.negative, 1 - age / 0.8)
+                pygame.draw.circle(screen, col, (sx, sy), r * self.renderer.scale, 2)
         self.effects = keep
 
     def _draw_hud(self, screen) -> None:
-        # Tool chips, top-left.
-        x = 10
-        for k, name in enumerate(TOOLS):
-            on = name == self.tool
-            label = f"{k + 1} {name}"
-            w = render.get_font(12, True).size(label)[0] + 16
-            chip = pygame.Rect(x, 10, w, 22)
-            panel(screen, chip, alpha=235 if on else 170)
-            if on:
-                pygame.draw.rect(screen, ACCENT, chip, 1, border_radius=8)
-            text(screen, label, chip.center, ACCENT if on else DIM, 12, bold=on, anchor="center")
-            x = chip.right + 6
+        th = theme()
+        # Interventions: a segmented control, top-left.
+        labels = [f"{k + 1}  {name.capitalize()}" for k, name in enumerate(TOOLS)]
+        widths = [render.get_font(12).size(s)[0] + 20 for s in labels]
+        head = render.get_font(12).size("Interventions")[0] + 20
+        bar = pygame.Rect(12, 12, head + sum(widths), 28)
+        card(screen, bar)
+        text(screen, "Interventions", (bar.x + 10, bar.centery), th.muted, 12, anchor="midleft")
+        x = bar.x + head
+        for name, label, w in zip(TOOLS, labels, widths):
+            seg = pygame.Rect(x, bar.y + 3, w - 3, bar.h - 6)
+            if name == self.tool:
+                pygame.draw.rect(screen, th.accent, seg, border_radius=3)
+            text(screen, label, seg.center, th.panel if name == self.tool else th.text, 12, anchor="center")
+            x += w
+
         flash, t0 = self.flash
         if flash and time.time() - t0 < 2.5:
-            text(screen, flash, (x + 8, 13), ACCENT, 13)
+            img = render.get_font(12).size(flash)
+            toast = pygame.Rect(12, bar.bottom + 8, img[0] + 20, 24)
+            card(screen, toast)
+            text(screen, flash, (toast.x + 10, toast.centery), th.text, 12, anchor="midleft")
 
-        # Status, top-right: REC blinks, PAUSED is steady.
+        # Status, top-right.
         right = self.size - 12
+        status = []
         if self.recorder is not None:
-            if int(time.time() * 2) % 2 == 0:
-                pygame.draw.circle(screen, (235, 50, 50), (right - 8, 21), 7)
-            right = text(screen, f"REC {self.recorder.frames}", (right - 22, 21), (235, 80, 80), 13, True,
-                         anchor="midright").x - 14
+            secs = int(time.time() - self._rec_start)
+            status.append((f"Recording {secs // 60}:{secs % 60:02d}", th.negative))
         if self.paused:
-            text(screen, "PAUSED", (right, 21), TEXT, 13, True, anchor="midright")
-
-        # Key help strip along the bottom.
-        strip = pygame.Surface((self.size, 36), pygame.SRCALPHA)
-        strip.fill((9, 10, 16, 210))
-        screen.blit(strip, (0, self.size - 36))
-        for k, line in enumerate(HELP):
-            text(screen, line, (self.size // 2, self.size - 27 + k * 15), DIM, 11, anchor="center")
+            status.append(("Paused", th.text))
+        for label, col in status:
+            w = render.get_font(12).size(label)[0] + (34 if col == th.negative else 20)
+            pill = pygame.Rect(right - w, 12, w, 28)
+            card(screen, pill)
+            if col == th.negative:
+                pygame.gfxdraw.filled_circle(screen, pill.x + 14, pill.centery, 4, th.negative)
+                pygame.gfxdraw.aacircle(screen, pill.x + 14, pill.centery, 4, th.negative)
+            text(screen, label, (pill.right - 10, pill.centery), col, 12, anchor="midright")
+            right = pill.x - 8
 
     def _draw_side(self, screen, rect: pygame.Rect) -> None:
-        screen.fill(BG, rect)
-        pygame.draw.line(screen, render.PANEL_EDGE, rect.topleft, rect.bottomleft)
-        w, s = self.world, self.stats
-        pad = 8
-        x, width = rect.x + pad, rect.w - 2 * pad
+        th, w, s = theme(), self.world, self.stats
+        screen.fill(th.panel, rect)
+        pygame.draw.line(screen, th.border, rect.topleft, rect.bottomleft)
+        x, width = rect.x + PAD, rect.w - 2 * PAD
+        x1 = x + width
 
-        # Header: title, counters, climate.
-        head = pygame.Rect(x, pad, width, 92)
-        panel(screen, head)
-        text(screen, "primordial", (head.x + 10, head.y + 7), ACCENT, 16, bold=True)
-        text(screen, f"step {s['step']:,}   x{self.steps_per_frame}", (head.right - 10, head.y + 9), TEXT, 12,
-             anchor="topright")
-        text(screen, f"pop {s['population']}   food {s.get('food', 0)}   lineages {s.get('lineages', 0)}",
-             (head.x + 10, head.y + 31), TEXT, 12)
-        text(screen, f"gen {s.get('mean_generation', 0):.1f} / {s.get('max_generation', 0)}   "
-                     f"bonded {s.get('bonded_fraction', 0):.0%}   prey {s.get('predation_share', 0):.0%}",
-             (head.x + 10, head.y + 48), DIM, 12)
+        text(screen, "Primordial — evolutionary particle simulation", (x, 14), th.text, 14, bold=True)
+        state = "paused" if self.paused else "running"
+        text(screen, f"Step {s['step']:,} · {self.steps_per_frame} steps per frame · {state}", (x, 36), th.muted, 11)
+        rule(screen, x, x1, 60)
+
+        y = section(screen, pygame.Rect(x, 70, width, 20), "Summary")
         season = w.season()
-        text(screen, "climate", (head.x + 10, head.y + 68), DIM, 11)
-        bar = pygame.Rect(head.x + 66, head.y + 72, 120, 6)
-        pygame.draw.rect(screen, (34, 38, 52), bar, border_radius=3)
-        pygame.draw.line(screen, (70, 75, 95), (bar.centerx, bar.y - 2), (bar.centerx, bar.bottom + 1))
-        sx = bar.centerx + season * bar.w / 2
-        pygame.draw.circle(screen, (120, 210, 120) if season >= 0 else (210, 150, 90), (sx, bar.centery), 5)
-        text(screen, f"food x{w.food_multiplier:.2f}  [ ]", (head.right - 10, head.y + 67), ACCENT, 12,
-             anchor="topright")
+        grid = [
+            (("Population", f"{s['population']:,}"), ("Food items", f"{s.get('food', 0):,}"),
+             ("Effective lineages", f"{float(s.get('lineages', 0)):.1f}")),
+            (("Mean generation", f"{s.get('mean_generation', 0):.1f}"), ("Max generation", f"{s.get('max_generation', 0)}"),
+             ("Bonded", f"{s.get('bonded_fraction', 0):.0%}")),
+            (("Predation share", f"{s.get('predation_share', 0):.0%}"), ("Season", f"{season:+.2f}"),
+             ("Food growth", f"×{w.food_multiplier:.2f}")),
+        ]
+        gap = 14
+        col_w = (width - 2 * gap) / 3
+        for row in grid:
+            for k, (label, value) in enumerate(row):
+                cx = x + k * (col_w + gap)
+                text(screen, label, (cx, y), th.muted, 11)
+                text(screen, value, (cx + col_w, y), th.text, 11, anchor="topright")
+            y += 16
+        y += 6
+        rule(screen, x, x1, y)
 
-        # Species legend sized to its rows.
-        rows = max(1, len(w.species_counts()))
-        legend = pygame.Rect(x, head.bottom + 6, width, 32 + 17 * rows)
-        render.draw_legend(screen, legend, w, self.renderer.color_mode == "species")
-        graph = pygame.Rect(x, legend.bottom + 6, width, 92)
-        self.graph.draw(screen, graph)
+        sp = pygame.Rect(x, y + 10, width, render.species_height(w))
+        render.draw_species(screen, sp, w, self.renderer.color_mode == "species")
+        rule(screen, x, x1, sp.bottom + 6)
+        chart = pygame.Rect(x, sp.bottom + 16, width, 108)
+        self.graph.draw(screen, chart)
+        rule(screen, x, x1, chart.bottom + 6)
 
-        bottom = pygame.Rect(x, graph.bottom + 6, width, rect.bottom - graph.bottom - 6 - pad)
-        if bottom.h < 80:        # window too short for the bottom panel
+        area = pygame.Rect(x, chart.bottom + 16, width, rect.bottom - chart.bottom - 16 - 30)
+        if area.h < 80:          # window too short for the detail area
             return
-        if self.show_tree:
-            self.tree.draw(screen, bottom, w, self.selected_uid if self.selected is not None else None)
-        elif self.selected is not None:
-            color = self.renderer.colors(w, torch.tensor([self.selected]))[0]
-            render.draw_inspector(screen, bottom, w, self.selected, color)
+        if self.show_tree or self.selected is not None:
+            if self.show_tree:
+                self.tree.draw(screen, area, w, self.selected_uid if self.selected is not None else None)
+            else:
+                color = self.renderer.colors(w, torch.tensor([self.selected]))[0]
+                render.draw_inspector(screen, area, w, self.selected, color)
+            rule(screen, x, x1, rect.bottom - 26)
+            text(screen, SHORT_HELP, (x, rect.bottom - 20), th.muted, 11)
         else:
-            self._draw_idle(screen, bottom)
+            self._draw_idle(screen, area.inflate(0, 30).move(0, 15))
 
     def _draw_idle(self, screen, rect: pygame.Rect) -> None:
-        """Inspector placeholder: hints plus a key to the marks on the world view."""
-        panel(screen, rect, title="inspector")
-        text(screen, f"colours: {self.renderer.color_mode}  (C to cycle)", (rect.x + 10, rect.y + 30), TEXT, 12)
-        hints = ["Click a particle (tool 1) to see its", "body, diet, lineage and live brain.", "",
-                 "F  family tree of everything alive", "G  sliders to bend the rules",
-                 "2  drop food     3  meteor", "R  record the window to recordings/"]
-        for k, line in enumerate(hints):
-            text(screen, line, (rect.x + 10, rect.y + 56 + k * 17), DIM, 12)
-        _draw_mark_key(screen, pygame.Rect(rect.x + 10, rect.y + 190, rect.w - 20, 60))
+        """Nothing selected: how to inspect, the legend, and the keyboard reference."""
+        th = theme()
+        y = section(screen, rect, "Particle inspector")
+        for line in ("Choose Inspect (1) and click a particle to see its body,",
+                     "diet, ancestry and neural network."):
+            text(screen, line, (rect.x, y), th.muted, 12)
+            y += 17
+        rule(screen, rect.x, rect.right, y + 8)
+        render.draw_legend(screen, pygame.Rect(rect.x, y + 18, rect.w, 82), self.renderer.color_mode)
+        y += 18 + 86
+        rule(screen, rect.x, rect.right, y)
+        y = section(screen, pygame.Rect(rect.x, y + 10, rect.w, 20), "Keyboard")
+        half = rect.w // 2
+        for k, (keys, action) in enumerate(KEYS):
+            cx, cy = rect.x + (k % 2) * half, y + (k // 2) * 16
+            if cy > rect.bottom - 14:
+                break
+            text(screen, keys, (cx, cy), th.text, 11)
+            text(screen, action, (cx + 62, cy), th.muted, 11)
 
 
-def _draw_mark_key(screen, rect: pygame.Rect) -> None:
-    """What the marks on the world view mean."""
-    items = [("ring", render.AGGRO, "attacking"), ("glow", (120, 200, 255), "signalling"),
-             ("line", (160, 160, 200), "bonded"), ("dot", render.FOOD, "food"),
-             ("circle", render.PATCH, "fertile patch"), ("cloud", (40, 200, 180), "scent A / B")]
-    for k, (kind, col, label) in enumerate(items):
-        cx = rect.x + 8 + (k % 2) * (rect.w // 2)
-        cy = rect.y + 8 + (k // 2) * 20
-        if kind == "ring":
-            pygame.draw.circle(screen, (200, 200, 210), (cx, cy), 4)
-            pygame.draw.circle(screen, col, (cx, cy), 7, 1)
-        elif kind == "glow":
-            for rr, a in ((9, 40), (6, 90), (4, 200)):
-                pygame.draw.circle(screen, [c * a // 255 for c in col], (cx, cy), rr)
-        elif kind == "line":
-            pygame.draw.line(screen, col, (cx - 7, cy + 3), (cx + 7, cy - 3), 2)
-        elif kind == "dot":
-            pygame.draw.circle(screen, col, (cx, cy), 2)
-        elif kind == "circle":
-            pygame.draw.circle(screen, col, (cx, cy), 7, 1)
-        else:
-            pygame.draw.circle(screen, (20, 70, 70), (cx - 2, cy), 7)
-            pygame.draw.circle(screen, (70, 25, 70), (cx + 3, cy), 6)
-        text(screen, label, (cx + 16, cy), DIM, 12, anchor="midleft")
+KEYS = [("Space", "Pause"), ("C", "Colour mode"), ("↑ / ↓", "Speed"), ("T", "Trails"),
+        ("1 – 3", "Interventions"), ("O", "Pheromone field"), ("Right-click", "Add food"),
+        ("V", "Signal display"), ("[ / ]", "Food growth"), ("B", "Bonds"), ("F", "Family tree"),
+        ("P", "Fertile patches"), ("G", "Parameters"), ("D", "Dark / light theme"), ("R", "Record video"),
+        ("H", "Hide overlays"), ("S", "Save checkpoint"), ("Q", "Quit")]
 
 
 def _pick(world: World, x: float, y: float, radius: float) -> int | None:
@@ -407,7 +425,7 @@ def run_viewer(world: World, size: int = 820, steps_per_frame: int = 2, save_pat
     pygame.init()
     viewer = Viewer(world, size, steps_per_frame, save_path)
     screen = pygame.display.set_mode(viewer.window_size)
-    pygame.display.set_caption("primordial")
+    pygame.display.set_caption("Primordial — evolutionary particle simulation")
     clock = pygame.time.Clock()
     try:
         while viewer.running:
