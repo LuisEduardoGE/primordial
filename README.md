@@ -1,5 +1,15 @@
 # primordial
 
+**Artificial life that evolves by selection alone.** Particles with small neural-network brains and evolvable bodies forage, hunt, signal, bond into organisms, mate and die, with no fitness function and no training data.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)
+![three.js](https://img.shields.io/badge/three.js-black?style=flat-square&logo=three.js)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+
+![The browser version: ~2,400 particles, live population chart and species breakdown](docs/screenshot.jpg)
+
 An artificial-life simulation in which particles with small neural-network brains and evolvable
 bodies forage, hunt, signal, bond into multi-particle organisms, mate and die. There is no fitness
 function and no training data. Behaviour comes from selection alone: particles that gather energy
@@ -91,3 +101,7 @@ experiments/  experiment specs
 scripts/      compete, bench
 tests/        pytest suite
 ```
+
+## License
+
+[MIT](LICENSE)
