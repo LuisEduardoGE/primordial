@@ -56,7 +56,7 @@ class Genome:
     @classmethod
     def empty(cls, cfg: Config) -> "Genome":
         c, h, d = cfg.capacity, cfg.hidden, torch.device(cfg.device)
-        z = lambda *s: torch.zeros(c, *s, device=d)  # noqa: E731
+        z = lambda *s: torch.zeros(c, *s, device=d)
         return cls(
             w1=z(N_INPUTS, h), b1=z(h), w2=z(h, N_OUTPUTS), b2=z(N_OUTPUTS),
             attraction=z(cfg.n_types), color=z(3),

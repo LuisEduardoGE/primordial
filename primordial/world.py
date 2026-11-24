@@ -19,8 +19,21 @@ import math
 import torch
 
 from .config import Config
-from .genome import (AGGRESSION, BOND, DEPOSIT, MEMORY, N_INPUTS, N_MEMORY, N_OUTPUTS, N_SENSES,
-                     SIGNAL, THRUST, Genome, crossover, mutate, think)
+from .genome import (
+    AGGRESSION,
+    BOND,
+    DEPOSIT,
+    MEMORY,
+    N_INPUTS,
+    N_MEMORY,
+    N_OUTPUTS,
+    SIGNAL,
+    THRUST,
+    Genome,
+    crossover,
+    mutate,
+    think,
+)
 from .lineage import Lineage
 from .spatial import neighbours, wrap
 from .species import SpeciesTracker, features
@@ -597,7 +610,7 @@ class World:
         g = self.genome
         bonded = (self.bonds[a] >= 0).any(1).float().mean()
         diet = self.prey_gained[a].sum() / (self.prey_gained[a].sum() + self.food_gained[a].sum() + 1e-6)
-        r = lambda x, k=4: round(float(x), k)  # noqa: E731
+        r = lambda x, k=4: round(float(x), k)
         return {
             "step": self.step_count,
             "population": pop,

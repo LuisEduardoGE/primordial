@@ -15,12 +15,12 @@ def world_with_twins(**kw):
 
 def off(**kw):
     """All mutation mechanisms disabled unless re-enabled via kw."""
-    base = dict(mutation_rate=0.0, sigma_tau=0.0, neuron_reset_prob=0.0)
+    base = {"mutation_rate": 0.0, "sigma_tau": 0.0, "neuron_reset_prob": 0.0}
     return {**base, **kw}
 
 
 def test_fixed_sigma_when_self_adaptation_off():
-    w, p, c = world_with_twins(**off(mutation_rate=0.5))
+    w, _p, c = world_with_twins(**off(mutation_rate=0.5))
     mutate(w.genome, c, w.cfg, w.gen)
     assert torch.allclose(w.genome.sigma[c], torch.full((1, 4), w.cfg.mutation_scale))
 

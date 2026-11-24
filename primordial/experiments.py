@@ -22,9 +22,9 @@ import math
 import multiprocessing as mp
 import os
 import time
+from collections.abc import Callable, Iterator
 from itertools import combinations
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
 
 from .config import Config
 

@@ -29,9 +29,8 @@ import json
 import math
 import random
 import time
-from dataclasses import asdict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .config import Config
 from .experiments import jsonable, make_config, pool_map, set_args, simulate
@@ -64,7 +63,7 @@ def decode(unit: list[float]) -> dict[str, float]:
     for u, (name, (lo, hi, log)) in zip(unit, PARAMS.items()):
         u = min(1.0, max(0.0, u))
         v = math.exp(math.log(lo) + u * (math.log(hi) - math.log(lo))) if log else lo + u * (hi - lo)
-        out[name] = int(round(v)) if isinstance(getattr(Config, name), int) else float(f"{v:.4g}")
+        out[name] = round(v) if isinstance(getattr(Config, name), int) else float(f"{v:.4g}")
     return out
 
 

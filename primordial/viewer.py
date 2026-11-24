@@ -250,10 +250,11 @@ class Viewer:
             for _ in range(self.steps_per_frame):
                 w.step()
         # Slots are recycled for newborns, so identity is the uid, not the slot.
-        if self.selected is not None:
-            if not bool(w.alive[self.selected]) or int(w.uid[self.selected]) != self.selected_uid:
-                self.say("Selected particle died")
-                self.select(None)
+        if self.selected is not None and (
+            not bool(w.alive[self.selected]) or int(w.uid[self.selected]) != self.selected_uid
+        ):
+            self.say("Selected particle died")
+            self.select(None)
         now = time.time()
         if now - self._stats_at > 0.25:      # stats() does many reductions; 4 Hz is plenty for a HUD
             self.stats = w.stats()

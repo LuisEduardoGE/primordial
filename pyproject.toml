@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = ["torch>=2.2", "pygame>=2.5"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff==0.17.6"]
 
 [project.scripts]
 primordial = "primordial.__main__:main"
@@ -20,3 +20,14 @@ packages = ["primordial"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = ["web"]
+
+[tool.ruff.lint]
+# Ruff's default rules, with three intentional patterns allowed.
+ignore = [
+  "SIM115",  # stats CSV files are opened only when a path is given and closed in a finally block
+  "ISC004",  # report HTML is built from lists of multi-line implicitly concatenated strings
+  "BLE001",  # VideoWriter falls back to GIF on any imageio/ffmpeg failure
+]

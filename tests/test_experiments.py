@@ -6,8 +6,8 @@ import math
 import pytest
 import torch
 
-from primordial import Config, World
-from primordial import discovery, experiments as ex
+from primordial import Config, World, discovery
+from primordial import experiments as ex
 from primordial.tournament import head_to_head, side_counts, sign_test
 
 TINY = {"capacity": 120, "initial_particles": 40, "food_capacity": 80, "min_population": 10, "species_interval": 20}
@@ -155,7 +155,7 @@ def test_decode_encode_roundtrip_and_cells():
 
 def test_discovery_runs_archives_and_resumes(tmp_path):
     out = tmp_path / "disc"
-    kw = dict(workers=1, steps=30, every=15, out=out, grid=3, fixed=TINY, log=lambda s: None)
+    kw = {"workers": 1, "steps": 30, "every": 15, "out": out, "grid": 3, "fixed": TINY, "log": lambda s: None}
     discovery.discover(evals=3, **kw)
     archive = json.loads((out / "archive.json").read_text())
     assert archive["evaluations"] == 3 and archive["elites"]

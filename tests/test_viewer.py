@@ -8,8 +8,7 @@ import pygame
 import pytest
 import torch
 
-from primordial import Config, World
-from primordial import render
+from primordial import Config, World, render
 from primordial.render import COLOR_MODES, Renderer, TreePanel, draw_brain, lineage_rgb
 from primordial.timelapse import add_subparser, run_timelapse
 from primordial.viewer import SLIDERS, TOOLS, Viewer

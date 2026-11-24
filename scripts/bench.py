@@ -4,7 +4,6 @@
 """
 
 import argparse
-import copy
 import os
 import tempfile
 import time

@@ -6,6 +6,7 @@ draw side-panel sections into a given rect, so the viewer only decides layout.
 Styling follows a sober light theme (with a dark variant) meant to read like an analysis tool.
 """
 
+import itertools
 import math
 import os
 import time
@@ -446,7 +447,7 @@ def draw_species(surface, rect: pygame.Rect, world, active: bool) -> None:
     counts = world.species_counts()
     y = section(surface, rect, "Behavioural species", "colouring particles" if active else "")
     if not counts:
-        text(surface, "Classifying… (every %d steps)" % world.cfg.species_interval, (rect.x, y), th.muted, 12)
+        text(surface, f"Classifying… (every {world.cfg.species_interval:d} steps)", (rect.x, y), th.muted, 12)
         return
     names = world.species.names
     total = max(1, sum(counts.values()))
@@ -735,7 +736,7 @@ class TreePanel:
         pts = [self.where[u] for u in chain if u in self.where]
         x, y = self.where[uid]
         pygame.draw.line(surface, th.text, (x, y), (self.plot.right, y), 2)
-        for (xc, yc), (xp, yp) in zip(pts, pts[1:]):
+        for (xc, yc), (xp, yp) in itertools.pairwise(pts):
             pygame.draw.line(surface, th.text, (xp, yp), (xp, yc), 2)
             pygame.draw.line(surface, th.text, (xp, yc), (xc, yc), 2)
         pygame.draw.circle(surface, th.accent, (self.plot.right, y), 4)

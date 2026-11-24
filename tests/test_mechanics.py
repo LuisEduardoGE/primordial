@@ -97,7 +97,7 @@ def test_budding_child_is_bonded_to_parent():
     w.genome.bud[p] = 1.0
     w.energy[p] = 10.0
     w._births()
-    child = [i for i in w.alive.nonzero().squeeze(1).tolist() if i != p][0]
+    child = next(i for i in w.alive.nonzero().squeeze(1).tolist() if i != p)
     assert child in w.bonds[p].tolist() and p in w.bonds[child].tolist()
 
 
@@ -110,7 +110,7 @@ def test_mating_mixes_genes_and_records_mate():
     w.energy[a], w.energy[b] = 10.0, 1.0
     w._births()
     assert w.mated_births == 1
-    child = [i for i in w.alive.nonzero().squeeze(1).tolist() if i not in (a, b)][0]
+    child = next(i for i in w.alive.nonzero().squeeze(1).tolist() if i not in (a, b))
     cu = int(w.uid[child])
     assert w.lineage.parent[cu] == int(w.uid[a]) and w.lineage.mate[cu] == int(w.uid[b])
     assert w.energy[b] < 1.0      # the mate contributed energy
